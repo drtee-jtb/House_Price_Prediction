@@ -1,3 +1,27 @@
+Metadata-Version: 2.4
+Name: house-price-prediction
+Version: 0.1.0
+Summary: End-to-end house price prediction pipeline
+Author: House Price Prediction Team
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.26.0
+Requires-Dist: pandas>=2.2.0
+Requires-Dist: scikit-learn>=1.4.0
+Requires-Dist: joblib>=1.3.0
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: pydantic>=2.9.0
+Requires-Dist: sqlalchemy>=2.0.0
+Requires-Dist: alembic>=1.13.0
+Requires-Dist: uvicorn>=0.30.0
+Requires-Dist: httpx>=0.27.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0.0; extra == "dev"
+Requires-Dist: jupyter>=1.0.0; extra == "dev"
+Requires-Dist: matplotlib>=3.8.0; extra == "dev"
+Requires-Dist: seaborn>=0.13.0; extra == "dev"
+
 # House Price Prediction
 
 End-to-end machine learning scaffold for training and serving a house price regression model.
@@ -66,12 +90,6 @@ RANDOM_STATE=42
 
 ## Train
 
-If you do not have a source CSV yet, generate a synthetic training set first:
-
-```bash
-python scripts/bootstrap_training_data.py
-```
-
 ```bash
 python scripts/train.py
 ```
@@ -107,7 +125,6 @@ A high-level FastAPI backend architecture and delivery roadmap is documented in 
 The repository now includes a first FastAPI backend slice with:
 
 - `POST /v1/predictions`
-- `GET /v1/predictions`
 - `GET /v1/predictions/{prediction_id}`
 - `POST /v1/properties/normalize`
 - `GET /v1/health`
@@ -118,58 +135,13 @@ Run locally with:
 uvicorn house_price_prediction.api.main:app --reload
 ```
 
-Run a backend smoke check without starting a separate server process:
-
-```bash
-python scripts/smoke_api.py
-```
-
-Run a fresh-db real-inference smoke check against the trained artifact and free fallback providers:
-
-```bash
-make smoke-real
-```
-
-Run migrations with:
-
-```bash
-alembic upgrade head
-```
-
 For local backend development without a trained artifact, `.env.example` enables `ENABLE_MOCK_PREDICTOR=true` so the API can return deterministic sample predictions while the orchestration and persistence layers are being built.
-
-The backend now keeps normalized addresses and registered model versions in dedicated tables so repeated requests can share canonical address records and predictions can be traced to an explicit model registry entry.
-
-Repeated requests for the same canonical address and active model version can now reuse the latest completed prediction instead of re-running enrichment and inference.
-
-Reuse is controlled by `PREDICTION_REUSE_MAX_AGE_HOURS`, and provider selection is now configurable through `GEOCODING_PROVIDER` and `PROPERTY_DATA_PROVIDER`.
-
-Provider execution policy is controlled by `PROVIDER_TIMEOUT_SECONDS` and `PROVIDER_MAX_RETRIES`. Upstream provider failures are mapped to `502 Bad Gateway` responses.
-
-API guardrails now reject PO box inputs, and the public free-provider path is explicitly limited to US addresses.
-
-Property provider payloads now include `feature_source` and `feature_provenance` so downstream consumers can tell whether features came from Census context, heuristic backfill, or deterministic fake generation.
-
-The prediction detail and recent-predictions contracts are now UI-facing read models: they include feature snapshot summaries and provider response summaries so a frontend can render trace, provenance, and prediction history without querying raw tables.
-
-For reused predictions, these read models also surface `source_prediction_id` and resolve provider/feature trace from the original prediction that produced the reused value.
-
-`make ci-verify` runs both smoke flows against isolated fresh SQLite files so local reruns do not hide behavior behind prediction reuse.
-
-The default no-key setup now uses free-provider fallbacks:
-
-- `GEOCODING_PROVIDER=free-fallback` tries Nominatim, then US Census geocoding, then local fake normalization
-- `PROPERTY_DATA_PROVIDER=free-fallback` tries tract-level US Census housing context, then heuristic address-derived features, then deterministic fake features
 
 ## Optional Make Commands
 
 ```bash
 make setup
-make bootstrap-data
 make train
 make predict
 make test
-make smoke-api
-make smoke-real
-make ci-verify
 ```
