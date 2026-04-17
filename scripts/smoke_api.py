@@ -19,6 +19,7 @@ if __name__ == "__main__":
     settings = load_settings()
     with TestClient(create_app(settings)) as client:
         health_response = client.get("/v1/health")
+        dashboard_response = client.get("/v1/dashboard/bootstrap?limit=5")
         prediction_response = client.post(
             "/v1/predictions",
             json={
@@ -30,10 +31,12 @@ if __name__ == "__main__":
             },
         )
         prediction_detail_response = None
+        prediction_trace_response = None
         predictions_list_response = None
         if prediction_response.status_code == 201:
             prediction_id = prediction_response.json()["prediction_id"]
             prediction_detail_response = client.get(f"/v1/predictions/{prediction_id}")
+            prediction_trace_response = client.get(f"/v1/predictions/{prediction_id}/trace")
             predictions_list_response = client.get("/v1/predictions?limit=5")
         po_box_response = client.post(
             "/v1/predictions",
@@ -59,9 +62,12 @@ if __name__ == "__main__":
             )
 
     _assert_status("health", health_response, 200)
+    _assert_status("dashboard", dashboard_response, 200)
     _assert_status("prediction", prediction_response, 201)
     if prediction_detail_response is not None:
         _assert_status("prediction_detail", prediction_detail_response, 200)
+    if prediction_trace_response is not None:
+        _assert_status("prediction_trace", prediction_trace_response, 200)
     if predictions_list_response is not None:
         _assert_status("predictions_list", predictions_list_response, 200)
     _assert_status("po_box_guardrail", po_box_response, 422)
@@ -70,11 +76,16 @@ if __name__ == "__main__":
 
     print("Health:")
     print(json.dumps(health_response.json(), indent=2))
+    print("Dashboard:")
+    print(json.dumps(dashboard_response.json(), indent=2))
     print("Prediction:")
     print(json.dumps(prediction_response.json(), indent=2))
     if prediction_detail_response is not None:
         print("Prediction Detail:")
         print(json.dumps(prediction_detail_response.json(), indent=2))
+    if prediction_trace_response is not None:
+        print("Prediction Trace:")
+        print(json.dumps(prediction_trace_response.json(), indent=2))
     if predictions_list_response is not None:
         print("Predictions List:")
         print(json.dumps(predictions_list_response.json(), indent=2))

@@ -25,6 +25,9 @@ The repository now has a working backend foundation, not just a plan.
   - US Census tract-level housing context enrichment
   - deterministic fake fallback providers when public upstreams fail
 - Geocoding responses and enrichment responses are both persisted as provider snapshots.
+- UI-facing read models now exist for recent predictions, prediction detail, and dedicated prediction trace retrieval.
+- A compact dashboard bootstrap contract now exposes runtime metadata, provider policy, recent predictions, and route templates for UI initialization.
+- The backend can now export an OpenAPI schema artifact for frontend integration.
 
 ## Current Starting Point
 
@@ -225,6 +228,9 @@ Start with a narrow API surface.
 
 - `GET /v1/predictions/{prediction_id}`
   - returns prediction result, status, model metadata, and source trace
+
+- `GET /v1/predictions/{prediction_id}/trace`
+  - returns reusable lineage, provider summaries, and source prediction trace for UI drill-down
 
 - `POST /v1/properties/normalize`
   - useful for UI validation and address confirmation

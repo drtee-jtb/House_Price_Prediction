@@ -6,7 +6,7 @@ from fastapi import Request
 from sqlalchemy.orm import Session
 
 from house_price_prediction.application.services.prediction_orchestrator import (
-    PredictionOrchestrator,
+    Brain,
 )
 from house_price_prediction.config import Settings
 from house_price_prediction.infrastructure.model_runtime.predictor import PredictionRuntime
@@ -20,8 +20,8 @@ def get_prediction_runtime(request: Request) -> PredictionRuntime:
     return request.app.state.prediction_runtime
 
 
-def get_prediction_orchestrator(request: Request) -> PredictionOrchestrator:
-    return request.app.state.prediction_orchestrator
+def get_brain(request: Request) -> Brain:
+    return request.app.state.brain
 
 
 def get_db_session(request: Request) -> Generator[Session, None, None]:

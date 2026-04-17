@@ -29,6 +29,8 @@ class PredictionRequestModel(Base):
     postal_code: Mapped[str] = mapped_column(String(20), nullable=False)
     country: Mapped[str] = mapped_column(String(60), nullable=False)
     normalized_address: Mapped[str] = mapped_column(Text, nullable=False)
+    feature_policy_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    feature_policy_version: Mapped[str] = mapped_column(String(30), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="received")
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -131,5 +133,20 @@ class PredictionModel(Base):
     model_version: Mapped[str] = mapped_column(String(60), nullable=False)
     was_reused: Mapped[bool] = mapped_column(nullable=False, default=False)
     generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, index=True
+    )
+
+
+class WorkflowEventModel(Base):
+    __tablename__ = "workflow_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    request_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("prediction_requests.id"), nullable=False, index=True
+    )
+    event_name: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )

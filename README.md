@@ -106,10 +106,16 @@ A high-level FastAPI backend architecture and delivery roadmap is documented in 
 
 The repository now includes a first FastAPI backend slice with:
 
+- `GET /v1/dashboard/bootstrap`
 - `POST /v1/predictions`
 - `GET /v1/predictions`
 - `GET /v1/predictions/{prediction_id}`
+- `GET /v1/predictions/{prediction_id}/trace`
+- `GET /v1/predictions/{prediction_id}/events`
 - `POST /v1/properties/normalize`
+- `GET /v1/validation/scenarios`
+- `POST /v1/validation/address-baseline`
+- `POST /v1/validation/full-audit`
 - `GET /v1/health`
 
 Run locally with:
@@ -146,13 +152,37 @@ Reuse is controlled by `PREDICTION_REUSE_MAX_AGE_HOURS`, and provider selection 
 
 Provider execution policy is controlled by `PROVIDER_TIMEOUT_SECONDS` and `PROVIDER_MAX_RETRIES`. Upstream provider failures are mapped to `502 Bad Gateway` responses.
 
+Feature completeness governance is controlled by `FEATURE_POLICY_NAME` (for example: `balanced-v1`, `quality-first-v1`, `land-first-v1`) so you can evolve feature weighting rules without changing route logic.
+
+You can version and target policies with `FEATURE_POLICY_VERSION` and optional per-state overrides via `FEATURE_POLICY_STATE_OVERRIDES` (for example: `FL:quality-first-v1,TX:land-first-v1`).
+
 API guardrails now reject PO box inputs, and the public free-provider path is explicitly limited to US addresses.
 
 Property provider payloads now include `feature_source` and `feature_provenance` so downstream consumers can tell whether features came from Census context, heuristic backfill, or deterministic fake generation.
 
 The prediction detail and recent-predictions contracts are now UI-facing read models: they include feature snapshot summaries and provider response summaries so a frontend can render trace, provenance, and prediction history without querying raw tables.
 
+`GET /v1/dashboard/bootstrap` adds a compact UI bootstrap contract with runtime metadata, provider policy, recent predictions, and link templates so the frontend can hydrate its initial state from one stable endpoint.
+
 For reused predictions, these read models also surface `source_prediction_id` and resolve provider/feature trace from the original prediction that produced the reused value.
+
+For UI flows that need deeper lineage without loading the full detail payload everywhere, `GET /v1/predictions/{prediction_id}/trace` returns the provider trace, root lineage information, and the hop-by-hop reuse chain.
+
+`GET /v1/predictions/{prediction_id}/events` returns ordered workflow events for the prediction request and supports `limit`, `offset`, and optional `event_name` filtering.
+
+`GET /v1/validation/scenarios` now returns live-derived candidate addresses from recent traffic (not hardcoded fake scenario fixtures).
+
+`POST /v1/validation/address-baseline` returns normalized location, pulled/missing feature coverage, and predicted value metadata for an address. Optional `expectations` can enforce pass/fail checks for completeness thresholds, required features, and feature bounds (including practical fields like bedrooms, total rooms, and living square footage).
+
+`POST /v1/validation/full-audit` automates end-to-end live routing checks in one call: baseline + create prediction + detail + trace + events, and returns a consolidated issue list for production-readiness triage.
+
+You can export the backend contract for frontend integration with:
+
+```bash
+make export-openapi
+```
+
+This writes the current OpenAPI schema to `docs/openapi.json`.
 
 `make ci-verify` runs both smoke flows against isolated fresh SQLite files so local reruns do not hide behavior behind prediction reuse.
 
@@ -172,4 +202,5 @@ make test
 make smoke-api
 make smoke-real
 make ci-verify
+make export-openapi
 ```

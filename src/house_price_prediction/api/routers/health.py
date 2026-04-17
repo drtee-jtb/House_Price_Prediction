@@ -28,4 +28,7 @@ def get_health(
         provider_timeout_seconds=settings.provider_timeout_seconds,
         provider_max_retries=settings.provider_max_retries,
         prediction_reuse_max_age_hours=settings.prediction_reuse_max_age_hours,
+        feature_policy_name=settings.feature_policy_name,
+        feature_policy_version=settings.feature_policy_version,
+        feature_policy_state_override_count=len(settings.feature_policy_state_overrides or {}),
     )

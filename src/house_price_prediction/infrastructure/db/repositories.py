@@ -14,8 +14,12 @@ from house_price_prediction.domain.contracts.prediction_contracts import (
     PredictionListItem,
     PredictionListResponse,
     PredictionRequestPayload,
+    PredictionTraceNode,
+    PredictionTraceResponse,
+    PredictionWorkflowEventsResponse,
     ProviderResponseContract,
     ProviderResponseSummary,
+    WorkflowEventItem,
 )
 from house_price_prediction.infrastructure.db.models import (
     FeatureSnapshotModel,
@@ -24,6 +28,7 @@ from house_price_prediction.infrastructure.db.models import (
     PredictionModel,
     PredictionRequestModel,
     ProviderResponseModel,
+    WorkflowEventModel,
 )
 
 
@@ -39,6 +44,8 @@ class PredictionRepository:
         payload: PredictionRequestPayload,
         normalized_address: NormalizedAddress,
         submitted_at: datetime,
+        feature_policy_name: str,
+        feature_policy_version: str,
     ) -> None:
         self._session.add(
             PredictionRequestModel(
@@ -53,6 +60,8 @@ class PredictionRepository:
                 postal_code=payload.postal_code,
                 country=payload.country,
                 normalized_address=normalized_address.formatted_address,
+                feature_policy_name=feature_policy_name,
+                feature_policy_version=feature_policy_version,
                 status="received",
                 submitted_at=submitted_at,
             )
@@ -104,6 +113,10 @@ class PredictionRepository:
             )
         )
         if existing is not None:
+            self._session.query(ModelRegistryModel).filter(
+                ModelRegistryModel.model_name == model_name,
+                ModelRegistryModel.id != existing.id,
+            ).update({ModelRegistryModel.is_active: False}, synchronize_session=False)
             existing.feature_columns = feature_columns
             existing.is_active = True
             return UUID(existing.id)
@@ -168,6 +181,25 @@ class PredictionRepository:
         )
         return provider_response_id
 
+    def create_workflow_event(
+        self,
+        request_id: UUID,
+        event_name: str,
+        payload: dict[str, object],
+        occurred_at: datetime,
+    ) -> UUID:
+        workflow_event_id = uuid4()
+        self._session.add(
+            WorkflowEventModel(
+                id=str(workflow_event_id),
+                request_id=str(request_id),
+                event_name=event_name,
+                payload=payload,
+                occurred_at=occurred_at,
+            )
+        )
+        return workflow_event_id
+
     def create_prediction(
         self,
         request_id: UUID,
@@ -228,9 +260,7 @@ class PredictionRepository:
             status=request.status,
             predicted_price=prediction.predicted_price,
             currency=prediction.currency,
-            confidence_score=prediction.confidence_score
-            if prediction.confidence_score is not None
-            else feature_snapshot.completeness_score,
+            confidence_score=prediction.confidence_score,
             model_name=prediction.model_name,
             model_version=prediction.model_version,
             feature_snapshot_id=UUID(feature_snapshot.id),
@@ -246,33 +276,107 @@ class PredictionRepository:
             source_prediction_id=UUID(prediction.source_prediction_id)
             if prediction.source_prediction_id is not None
             else None,
+            selected_feature_policy_name=request.feature_policy_name,
+            selected_feature_policy_version=request.feature_policy_version,
             error_message=request.error_message,
         )
 
-    def list_recent_predictions(self, limit: int = 10) -> PredictionListResponse:
-        statement = (
-            select(PredictionModel)
+    def list_recent_predictions(self, limit: int = 10, offset: int = 0) -> PredictionListResponse:
+        # Count query (same filter, no pagination) — one DB round-trip.
+        total: int = self._session.scalar(
+            select(func.count(PredictionModel.id))
             .join(PredictionRequestModel, PredictionRequestModel.id == PredictionModel.request_id)
+            .where(PredictionRequestModel.status == "completed")
+        ) or 0
+
+        # Primary query: join PredictionRequestModel + NormalizedAddressModel in one shot
+        # so we never call session.get() per-row for those two tables.
+        rows = self._session.execute(
+            select(PredictionModel, PredictionRequestModel, NormalizedAddressModel)
+            .join(PredictionRequestModel, PredictionRequestModel.id == PredictionModel.request_id)
+            .join(
+                NormalizedAddressModel,
+                NormalizedAddressModel.id == PredictionRequestModel.normalized_address_id,
+            )
             .where(PredictionRequestModel.status == "completed")
             .order_by(PredictionModel.generated_at.desc())
             .limit(limit)
-        )
-        prediction_rows = self._session.scalars(statement).all()
+            .offset(offset)
+        ).all()
+
+        if not rows:
+            return PredictionListResponse(items=[], total=total, limit=limit, offset=offset)
+
+        # Batch-resolve the "trace" request ID for reused predictions.
+        # For reused rows, the provider responses live on source_prediction_id's request.
+        # Collect all source_prediction_ids we need to resolve in one query.
+        reused_source_ids = [
+            prediction.source_prediction_id
+            for prediction, _, _ in rows
+            if prediction.was_reused and prediction.source_prediction_id is not None
+        ]
+        source_prediction_request_map: dict[str, str] = {}  # source_pred_id → request_id
+        if reused_source_ids:
+            source_rows = self._session.execute(
+                select(PredictionModel.id, PredictionModel.request_id).where(
+                    PredictionModel.id.in_(reused_source_ids)
+                )
+            ).all()
+            source_prediction_request_map = {row.id: row.request_id for row in source_rows}
+
+        # Collect all request IDs whose provider responses we need (batch load).
+        trace_request_ids: dict[str, str] = {}  # prediction.id → effective_request_id
+        for prediction, request, _ in rows:
+            if prediction.was_reused and prediction.source_prediction_id is not None:
+                effective = source_prediction_request_map.get(
+                    prediction.source_prediction_id, request.id
+                )
+            else:
+                effective = request.id
+            trace_request_ids[prediction.id] = effective
+
+        # Batch-load all provider responses for the relevant request IDs in one query.
+        all_trace_request_ids = list(set(trace_request_ids.values()))
+        provider_rows = self._session.execute(
+            select(ProviderResponseModel)
+            .where(ProviderResponseModel.request_id.in_(all_trace_request_ids))
+            .order_by(ProviderResponseModel.fetched_at.asc())
+        ).scalars().all()
+
+        provider_by_request: dict[str, list[ProviderResponseContract]] = {}
+        for row in provider_rows:
+            contract = ProviderResponseContract(
+                provider_name=row.provider_name,
+                status=row.status,
+                payload=row.payload,
+                fetched_at=row.fetched_at,
+            )
+            provider_by_request.setdefault(row.request_id, []).append(contract)
+
+        # Build list items — zero extra DB queries from here.
         items: list[PredictionListItem] = []
-        for prediction in prediction_rows:
-            request = self._session.get(PredictionRequestModel, prediction.request_id)
-            feature_snapshot = self._session.get(FeatureSnapshotModel, prediction.feature_snapshot_id)
-            if request is None or feature_snapshot is None:
-                continue
-
-            normalized_address = self._build_normalized_address(request)
-            trace_request_id = UUID(request.id)
-            trace_prediction = self._resolve_trace_prediction(prediction)
-            if trace_prediction is not None:
-                trace_request_id = UUID(trace_prediction.request_id)
-
-            provider_responses = self.get_provider_responses(trace_request_id)
+        for prediction, request, norm_addr in rows:
+            effective_request_id = trace_request_ids[prediction.id]
+            provider_responses = provider_by_request.get(effective_request_id, [])
             feature_source = self._find_feature_source(provider_responses)
+
+            normalized_address = NormalizedAddress(
+                address_line_1=" ".join(request.address_line_1.strip().upper().split()),
+                address_line_2=(
+                    " ".join(request.address_line_2.strip().upper().split())
+                    if request.address_line_2
+                    else None
+                ),
+                city=" ".join(request.city.strip().upper().split()),
+                state=request.state.strip().upper(),
+                postal_code=request.postal_code.strip().upper(),
+                country=request.country.strip().upper(),
+                formatted_address=request.normalized_address,
+                latitude=norm_addr.latitude,
+                longitude=norm_addr.longitude,
+                geocoding_source=norm_addr.geocoding_source,
+            )
+
             items.append(
                 PredictionListItem(
                     request_id=UUID(request.id),
@@ -291,16 +395,56 @@ class PredictionRepository:
                     else None,
                     requested_by=request.requested_by,
                     feature_source=feature_source,
+                    selected_feature_policy_name=request.feature_policy_name,
+                    selected_feature_policy_version=request.feature_policy_version,
                 )
             )
 
-        return PredictionListResponse(items=items)
+        return PredictionListResponse(items=items, total=total, limit=limit, offset=offset)
+
+    def get_prediction_trace(self, prediction_id: UUID) -> PredictionTraceResponse | None:
+        prediction = self._session.get(PredictionModel, str(prediction_id))
+        if prediction is None:
+            return None
+
+        request = self._session.get(PredictionRequestModel, prediction.request_id)
+        if request is None:
+            return None
+
+        trace_predictions = self._resolve_trace_chain(prediction)
+        root_prediction = trace_predictions[-1]
+        root_request = self._session.get(PredictionRequestModel, root_prediction.request_id)
+        root_feature_snapshot = self._session.get(
+            FeatureSnapshotModel, root_prediction.feature_snapshot_id
+        )
+        if root_request is None or root_feature_snapshot is None:
+            return None
+
+        return PredictionTraceResponse(
+            request_id=UUID(request.id),
+            prediction_id=UUID(prediction.id),
+            source_prediction_id=UUID(prediction.source_prediction_id)
+            if prediction.source_prediction_id is not None
+            else None,
+            root_prediction_id=UUID(root_prediction.id),
+            was_reused=prediction.was_reused,
+            normalized_address=self._build_normalized_address(request),
+            feature_snapshot=self._build_feature_snapshot_summary(root_feature_snapshot),
+            provider_responses=[
+                self._build_provider_response_summary(provider_response)
+                for provider_response in self.get_provider_responses(UUID(root_request.id))
+            ],
+            trace_nodes=[self._build_prediction_trace_node(item) for item in trace_predictions],
+            workflow_events=self._list_workflow_events(request_id=UUID(request.id), limit=100)[0],
+        )
 
     def find_reusable_prediction(
         self,
         normalized_address_id: UUID,
         model_registry_id: UUID,
         max_age_hours: int,
+        feature_policy_name: str,
+        feature_policy_version: str,
     ) -> PredictionDetailResponse | None:
         if max_age_hours <= 0:
             return None
@@ -311,6 +455,8 @@ class PredictionRepository:
             .join(PredictionRequestModel, PredictionRequestModel.id == PredictionModel.request_id)
             .where(PredictionRequestModel.normalized_address_id == str(normalized_address_id))
             .where(PredictionRequestModel.status == "completed")
+            .where(PredictionRequestModel.feature_policy_name == feature_policy_name)
+            .where(PredictionRequestModel.feature_policy_version == feature_policy_version)
             .where(PredictionModel.model_registry_id == str(model_registry_id))
             .where(PredictionModel.generated_at >= cutoff)
             .order_by(PredictionModel.generated_at.desc())
@@ -350,6 +496,75 @@ class PredictionRepository:
     def get_request_status(self, request_id: UUID) -> str | None:
         request = self._session.get(PredictionRequestModel, str(request_id))
         return request.status if request is not None else None
+
+    def get_request_id_for_prediction(self, prediction_id: UUID) -> UUID | None:
+        prediction = self._session.get(PredictionModel, str(prediction_id))
+        if prediction is None:
+            return None
+        return UUID(prediction.request_id)
+
+    def get_prediction_workflow_events(
+        self,
+        prediction_id: UUID,
+        limit: int = 100,
+        offset: int = 0,
+        event_name: str | None = None,
+        sort: str = "asc",
+    ) -> PredictionWorkflowEventsResponse | None:
+        request_id = self.get_request_id_for_prediction(prediction_id)
+        if request_id is None:
+            return None
+
+        events, total_count = self._list_workflow_events(
+            request_id=request_id,
+            limit=limit,
+            offset=offset,
+            event_name=event_name,
+            sort=sort,
+        )
+        return PredictionWorkflowEventsResponse(
+            request_id=request_id,
+            prediction_id=prediction_id,
+            total_count=total_count,
+            limit=limit,
+            offset=offset,
+            event_name=event_name,
+            sort=sort,
+            events=events,
+        )
+
+    def _list_workflow_events(
+        self,
+        request_id: UUID,
+        limit: int | None = None,
+        offset: int = 0,
+        event_name: str | None = None,
+        sort: str = "asc",
+    ) -> tuple[list[WorkflowEventItem], int]:
+        query = self._session.query(WorkflowEventModel).filter(
+            WorkflowEventModel.request_id == str(request_id)
+        )
+        if event_name:
+            query = query.filter(WorkflowEventModel.event_name == event_name)
+
+        total_count = int(query.count())
+        if sort == "desc":
+            query = query.order_by(WorkflowEventModel.occurred_at.desc())
+        else:
+            query = query.order_by(WorkflowEventModel.occurred_at.asc())
+        query = query.offset(offset)
+        if limit is not None:
+            query = query.limit(limit)
+
+        rows = query.all()
+        return [
+            WorkflowEventItem(
+                event_name=row.event_name,
+                payload=row.payload,
+                occurred_at=row.occurred_at,
+            )
+            for row in rows
+        ], total_count
 
     def count_normalized_addresses(self) -> int:
         return int(self._session.scalar(select(func.count()).select_from(NormalizedAddressModel)) or 0)
@@ -421,6 +636,36 @@ class PredictionRepository:
             current = source_prediction
             visited_ids.add(current.id)
         return current
+
+    def _resolve_trace_chain(
+        self,
+        prediction: PredictionModel,
+    ) -> list[PredictionModel]:
+        chain = [prediction]
+        current = prediction
+        visited_ids = {current.id}
+        while current.source_prediction_id is not None:
+            source_prediction = self._session.get(PredictionModel, current.source_prediction_id)
+            if source_prediction is None or source_prediction.id in visited_ids:
+                break
+            chain.append(source_prediction)
+            current = source_prediction
+            visited_ids.add(current.id)
+        return chain
+
+    def _build_prediction_trace_node(
+        self,
+        prediction: PredictionModel,
+    ) -> PredictionTraceNode:
+        return PredictionTraceNode(
+            request_id=UUID(prediction.request_id),
+            prediction_id=UUID(prediction.id),
+            generated_at=prediction.generated_at,
+            was_reused=prediction.was_reused,
+            source_prediction_id=UUID(prediction.source_prediction_id)
+            if prediction.source_prediction_id is not None
+            else None,
+        )
 
     def _build_normalized_address(self, request: PredictionRequestModel) -> NormalizedAddress:
         normalized_address_row = self._session.get(

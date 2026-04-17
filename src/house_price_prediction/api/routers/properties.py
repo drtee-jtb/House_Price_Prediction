@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from house_price_prediction.api.dependencies import get_prediction_orchestrator, get_settings
+from house_price_prediction.api.dependencies import get_brain, get_settings
 from house_price_prediction.api.guardrails import (
     RequestGuardrailError,
     validate_address_payload,
 )
 from house_price_prediction.application.services.prediction_orchestrator import (
-    PredictionOrchestrator,
+    Brain,
 )
 from house_price_prediction.config import Settings
 from house_price_prediction.domain.contracts.prediction_contracts import (
@@ -23,7 +23,7 @@ router = APIRouter(prefix="/v1/properties", tags=["properties"])
 @router.post("/normalize", response_model=NormalizedAddress)
 def normalize_property_address(
     payload: AddressPayload,
-    orchestrator: PredictionOrchestrator = Depends(get_prediction_orchestrator),
+    orchestrator: Brain = Depends(get_brain),
     settings: Settings = Depends(get_settings),
 ) -> NormalizedAddress:
     try:

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from dataclasses import replace
 from pathlib import Path
 from time import sleep
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from house_price_prediction.api.main import create_app
 from house_price_prediction.config import Settings
@@ -113,6 +116,7 @@ def test_prediction_endpoint_persists_and_fetches_result(tmp_path: Path):
         assert fetch_response.status_code == 200
         fetch_payload = fetch_response.json()
         assert fetch_payload["request_id"] == payload["request_id"]
+        assert fetch_payload["predicted_price"] == payload["predicted_price"]
         assert fetch_payload["normalized_address"]["city"] == "MIAMI"
         assert fetch_payload["normalized_address"]["geocoding_source"] == "fake"
         assert fetch_payload["feature_snapshot"]["feature_count"] >= 1
@@ -136,6 +140,9 @@ def test_health_endpoint_reports_runtime_state(tmp_path: Path):
         assert payload["geocoding_provider"] == "fake"
         assert payload["provider_timeout_seconds"] == 3.0
         assert payload["provider_max_retries"] == 2
+        assert payload["feature_policy_name"] == "balanced-v1"
+        assert payload["feature_policy_version"] == "v1"
+        assert payload["feature_policy_state_override_count"] == 0
 
 
 def test_predictions_list_endpoint_returns_recent_predictions(tmp_path: Path):
@@ -162,6 +169,43 @@ def test_predictions_list_endpoint_returns_recent_predictions(tmp_path: Path):
     assert len(payload["items"]) == 2
     assert payload["items"][0]["feature_source"] == "fake"
     assert payload["items"][0]["normalized_address"]["country"] == "US"
+
+
+def test_dashboard_bootstrap_returns_runtime_policy_and_recent_predictions(tmp_path: Path):
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        create_response = client.post(
+            "/v1/predictions",
+            json={
+                "address_line_1": "123 Main St",
+                "city": "Miami",
+                "state": "FL",
+                "postal_code": "33101",
+                "country": "US",
+            },
+        )
+        assert create_response.status_code == 201
+
+        response = client.get("/v1/dashboard/bootstrap?limit=1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["runtime"]["app_name"] == settings.app_name
+    assert payload["runtime"]["model_version"] == settings.model_version
+    assert payload["provider_policy"]["geocoding_provider"] == settings.geocoding_provider
+    assert payload["provider_policy"]["property_data_provider"] == settings.property_data_provider
+    assert payload["provider_policy"]["feature_policy_name"] == settings.feature_policy_name
+    assert payload["provider_policy"]["feature_policy_version"] == settings.feature_policy_version
+    assert payload["provider_policy"]["feature_policy_state_overrides"] == settings.feature_policy_state_overrides
+    assert payload["links"]["prediction_detail"] == "/v1/predictions/{prediction_id}"
+    assert len(payload["recent_predictions"]) == 1
+    assert payload["recent_predictions"][0]["normalized_address"]["city"] == "MIAMI"
+    assert payload["event_summary"]["prediction_id"] == payload["recent_predictions"][0]["prediction_id"]
+    assert payload["event_summary"]["total_events"] >= 1
+    assert payload["event_summary"]["latest_event_name"] is not None
+    assert isinstance(payload["event_summary"]["recent_event_names"], list)
 
 
 def test_reused_prediction_detail_surfaces_source_lineage(tmp_path: Path):
@@ -203,6 +247,47 @@ def test_reused_prediction_detail_surfaces_source_lineage(tmp_path: Path):
     assert detail_payload["source_prediction_id"] == first_response.json()["prediction_id"]
     assert len(detail_payload["provider_responses"]) == 2
     assert detail_payload["provider_responses"][1]["feature_source"] == "fake"
+
+
+def test_prediction_trace_endpoint_returns_lineage_nodes(tmp_path: Path):
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        first_response = client.post(
+            "/v1/predictions",
+            json={
+                "address_line_1": "1600 Pennsylvania Ave NW",
+                "city": "Washington",
+                "state": "DC",
+                "postal_code": "20500",
+                "country": "US",
+            },
+        )
+        second_response = client.post(
+            "/v1/predictions",
+            json={
+                "address_line_1": "1600 Pennsylvania Ave NW",
+                "city": "Washington",
+                "state": "DC",
+                "postal_code": "20500",
+                "country": "US",
+            },
+        )
+
+        trace_response = client.get(
+            f"/v1/predictions/{second_response.json()['prediction_id']}/trace"
+        )
+
+    assert first_response.status_code == 201
+    assert second_response.status_code == 201
+    assert trace_response.status_code == 200
+    trace_payload = trace_response.json()
+    assert trace_payload["was_reused"] is True
+    assert trace_payload["root_prediction_id"] == first_response.json()["prediction_id"]
+    assert len(trace_payload["trace_nodes"]) == 2
+    assert trace_payload["trace_nodes"][0]["prediction_id"] == second_response.json()["prediction_id"]
+    assert trace_payload["trace_nodes"][1]["prediction_id"] == first_response.json()["prediction_id"]
+    assert trace_payload["provider_responses"][1]["provider_name"] == "fake_property_data"
 
 
 def test_prediction_persists_provider_response(tmp_path: Path):
@@ -336,6 +421,49 @@ def test_reuse_can_be_disabled_with_zero_hour_freshness_window(tmp_path: Path):
 
     assert responses[0]["was_reused"] is False
     assert responses[1]["was_reused"] is False
+
+
+def test_reuse_does_not_cross_feature_policy_boundaries(tmp_path: Path):
+    base_settings = build_test_settings(tmp_path)
+    first_policy_settings = replace(
+        base_settings,
+        feature_policy_name="balanced-v1",
+    )
+    second_policy_settings = replace(
+        base_settings,
+        feature_policy_name="quality-first-v1",
+    )
+
+    with TestClient(create_app(first_policy_settings)) as first_client:
+        first_response = first_client.post(
+            "/v1/predictions",
+            json={
+                "address_line_1": "55 Policy Way",
+                "city": "Miami",
+                "state": "FL",
+                "postal_code": "33101",
+                "country": "US",
+            },
+        )
+
+    with TestClient(create_app(second_policy_settings)) as second_client:
+        second_response = second_client.post(
+            "/v1/predictions",
+            json={
+                "address_line_1": "55 Policy Way",
+                "city": "Miami",
+                "state": "FL",
+                "postal_code": "33101",
+                "country": "US",
+            },
+        )
+
+    assert first_response.status_code == 201
+    assert second_response.status_code == 201
+    assert first_response.json()["was_reused"] is False
+    assert second_response.json()["was_reused"] is False
+    assert first_response.json()["selected_feature_policy_name"] == "balanced-v1"
+    assert second_response.json()["selected_feature_policy_name"] == "quality-first-v1"
 
 
 def test_normalize_route_uses_geocoding_provider(tmp_path: Path):
@@ -749,3 +877,644 @@ def test_non_mock_prediction_path_with_trained_artifact(tmp_path: Path):
     payload = response.json()
     assert payload["predicted_price"] > 0
     assert payload["model_version"] == "real-test-version"
+
+
+def test_prediction_persists_brain_workflow_events(tmp_path: Path):
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/v1/predictions",
+            json={
+                "address_line_1": "300 Biscayne Blvd",
+                "city": "Miami",
+                "state": "FL",
+                "postal_code": "33131",
+                "country": "US",
+            },
+        )
+
+    assert response.status_code == 201
+    request_id = response.json()["request_id"]
+
+    session_factory = init_database(settings.database_url)
+    with session_factory() as session:
+        rows = session.execute(
+            text(
+                """
+                SELECT event_name
+                FROM workflow_events
+                WHERE request_id = :request_id
+                ORDER BY occurred_at ASC
+                """
+            ),
+            {"request_id": request_id},
+        ).fetchall()
+
+    event_names = [row[0] for row in rows]
+    assert "prediction_received" in event_names
+    assert "address_normalized" in event_names
+    assert "reuse_candidate_evaluated" in event_names
+    assert "property_enrichment_completed" in event_names
+    assert "feature_vector_created" in event_names
+    assert "prediction_completed" in event_names
+
+
+def test_prediction_workflow_events_endpoint_returns_event_stream(tmp_path: Path):
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        create_response = client.post(
+            "/v1/predictions",
+            json={
+                "address_line_1": "500 Brickell Ave",
+                "city": "Miami",
+                "state": "FL",
+                "postal_code": "33131",
+                "country": "US",
+            },
+        )
+        assert create_response.status_code == 201
+        prediction_id = create_response.json()["prediction_id"]
+
+        events_response = client.get(f"/v1/predictions/{prediction_id}/events")
+
+    assert events_response.status_code == 200
+    payload = events_response.json()
+    assert payload["prediction_id"] == prediction_id
+    assert payload["total_count"] >= 4
+    assert payload["limit"] == 100
+    assert payload["offset"] == 0
+    assert payload["event_name"] is None
+    assert len(payload["events"]) >= 4
+    event_names = [item["event_name"] for item in payload["events"]]
+    assert "prediction_received" in event_names
+    assert "prediction_completed" in event_names
+
+
+def test_prediction_workflow_events_endpoint_supports_filter_and_pagination(tmp_path: Path):
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        create_response = client.post(
+            "/v1/predictions",
+            json={
+                "address_line_1": "900 Bayfront Pkwy",
+                "city": "Miami",
+                "state": "FL",
+                "postal_code": "33132",
+                "country": "US",
+            },
+        )
+        assert create_response.status_code == 201
+        prediction_id = create_response.json()["prediction_id"]
+
+        filtered_response = client.get(
+            f"/v1/predictions/{prediction_id}/events",
+            params={"event_name": "prediction_completed", "limit": 1, "offset": 0},
+        )
+
+    assert filtered_response.status_code == 200
+    payload = filtered_response.json()
+    assert payload["event_name"] == "prediction_completed"
+    assert payload["limit"] == 1
+    assert payload["offset"] == 0
+    assert payload["sort"] == "asc"
+    assert payload["total_count"] >= 1
+    assert len(payload["events"]) == 1
+    assert payload["events"][0]["event_name"] == "prediction_completed"
+
+
+def test_prediction_workflow_events_endpoint_supports_desc_sort(tmp_path: Path):
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        create_response = client.post(
+            "/v1/predictions",
+            json={
+                "address_line_1": "77 Harbor Dr",
+                "city": "Miami",
+                "state": "FL",
+                "postal_code": "33132",
+                "country": "US",
+            },
+        )
+        assert create_response.status_code == 201
+        prediction_id = create_response.json()["prediction_id"]
+
+        events_response = client.get(
+            f"/v1/predictions/{prediction_id}/events",
+            params={"sort": "desc", "limit": 1},
+        )
+
+    assert events_response.status_code == 200
+    payload = events_response.json()
+    assert payload["sort"] == "desc"
+    assert len(payload["events"]) == 1
+    assert payload["events"][0]["event_name"] == "prediction_completed"
+
+
+def test_prediction_workflow_events_endpoint_returns_404_for_unknown_prediction(tmp_path: Path):
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get(f"/v1/predictions/{uuid4()}/events")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Prediction not found."
+
+
+def test_prediction_trace_includes_workflow_events(tmp_path: Path):
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        create_response = client.post(
+            "/v1/predictions",
+            json={
+                "address_line_1": "101 Ocean Dr",
+                "city": "Miami Beach",
+                "state": "FL",
+                "postal_code": "33139",
+                "country": "US",
+            },
+        )
+        assert create_response.status_code == 201
+        prediction_id = create_response.json()["prediction_id"]
+
+        trace_response = client.get(f"/v1/predictions/{prediction_id}/trace")
+
+    assert trace_response.status_code == 200
+    payload = trace_response.json()
+    assert "workflow_events" in payload
+    assert len(payload["workflow_events"]) >= 1
+    assert payload["workflow_events"][0]["event_name"] == "prediction_received"
+
+
+def test_feature_policy_catalog_endpoint_returns_runtime_defaults_and_definitions(tmp_path: Path):
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/v1/policies/feature")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["default_policy_name"] == settings.feature_policy_name
+    assert payload["default_policy_version"] == settings.feature_policy_version
+    assert payload["state_overrides"] == {}
+
+    policy_names = [item["name"] for item in payload["policies"]]
+    assert "balanced-v1" in policy_names
+    assert "quality-first-v1" in policy_names
+    assert "land-first-v1" in policy_names
+
+
+def test_feature_policy_simulation_endpoint_returns_requested_policy_results(tmp_path: Path):
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/v1/policies/feature/simulate",
+            json={
+                "address_line_1": "1200 Brickell Bay Dr",
+                "city": "Miami",
+                "state": "FL",
+                "postal_code": "33131",
+                "country": "US",
+                "policy_names": ["balanced-v1", "quality-first-v1"],
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["normalized_address"]["city"] == "MIAMI"
+    assert payload["provider_name"] == "fake_property_data"
+    assert len(payload["simulations"]) == 2
+
+    returned_policy_names = [item["policy_name"] for item in payload["simulations"]]
+    assert returned_policy_names == ["balanced-v1", "quality-first-v1"]
+    for item in payload["simulations"]:
+        assert item["predicted_price"] > 0
+        assert 0 <= item["completeness_score"] <= 1
+        assert item["weight_total"] is not None
+
+
+def test_feature_policy_simulation_endpoint_rejects_unknown_policy_name(tmp_path: Path):
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/v1/policies/feature/simulate",
+            json={
+                "address_line_1": "1200 Brickell Bay Dr",
+                "city": "Miami",
+                "state": "FL",
+                "postal_code": "33131",
+                "country": "US",
+                "policy_names": ["unknown-v1"],
+            },
+        )
+
+    assert response.status_code == 422
+    assert "Unsupported feature policy name" in response.json()["detail"]
+
+
+def test_validation_scenarios_endpoint_returns_baseline_catalog(tmp_path: Path):
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/v1/validation/scenarios")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "scenarios" in payload
+    assert isinstance(payload["scenarios"], list)
+
+
+def test_address_baseline_endpoint_returns_location_feature_and_value_contract(tmp_path: Path):
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/v1/validation/address-baseline",
+            json={
+                "address_line_1": "500 Brickell Ave",
+                "city": "Miami",
+                "state": "FL",
+                "postal_code": "33131",
+                "country": "US",
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["contract_version"] == "2026-04-16"
+    assert payload["location"]["normalized_address"]["city"] == "MIAMI"
+    assert payload["location"]["geocoding_provider"] == "fake_geocoding"
+    assert payload["features"]["pulled_feature_count"] >= 1
+    assert payload["features"]["missing_feature_count"] >= 0
+    assert payload["features"]["pulled_feature_count"] + payload["features"]["missing_feature_count"] == len(payload["features"]["expected_features"])
+    assert "BedroomAbvGr" in payload["features"]["key_feature_values"]
+    assert "TotRmsAbvGrd" in payload["features"]["key_feature_values"]
+    assert "GrLivArea" in payload["features"]["key_feature_values"]
+    assert payload["value"]["predicted_price"] > 0
+    assert payload["value"]["property_provider"] == "fake_property_data"
+    assert payload["assessment"]["overall_status"] == "not_evaluated"
+
+
+def test_address_baseline_with_scenario_returns_assessment_checks(tmp_path: Path):
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/v1/validation/address-baseline",
+            json={
+                "address_line_1": "500 Brickell Ave",
+                "city": "Miami",
+                "state": "FL",
+                "postal_code": "33131",
+                "country": "US",
+                "expectations": {
+                    "min_completeness_score": 0.98,
+                    "required_features": ["BedroomAbvGr", "TotRmsAbvGrd", "GrLivArea", "LotArea"],
+                    "feature_bounds": {
+                        "BedroomAbvGr": {"minimum": 1, "maximum": 8},
+                        "TotRmsAbvGrd": {"minimum": 2, "maximum": 14},
+                        "GrLivArea": {"minimum": 500, "maximum": 6000},
+                        "LotArea": {"minimum": 1000, "maximum": 50000},
+                    },
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["assessment"]["checks"]) >= 1
+    check_names = [item["check_name"] for item in payload["assessment"]["checks"]]
+    assert "completeness_threshold" in check_names
+    assert any(name.startswith("required_feature:") for name in check_names)
+    assert any(name.startswith("feature_bounds:") for name in check_names)
+
+
+def test_full_audit_endpoint_returns_aggregated_report(tmp_path: Path):
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/v1/validation/full-audit",
+            json={
+                "address_line_1": "500 Brickell Ave",
+                "city": "Miami",
+                "state": "FL",
+                "postal_code": "33131",
+                "country": "US",
+                "requested_by": "audit@example.com",
+                "expectations": {
+                    "min_completeness_score": 0.98,
+                    "required_features": ["BedroomAbvGr", "TotRmsAbvGrd", "GrLivArea", "LotArea"],
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["contract_version"] == "2026-04-16"
+    assert payload["prediction"]["status"] == "completed"
+    assert payload["baseline"]["assessment"]["overall_status"] in {"passed", "failed"}
+    assert isinstance(payload["issues"], list)
+
+
+def test_run_scenario_batch_all_registered_scenarios_pass(tmp_path: Path):
+    """
+    POST /v1/validation/run-scenario-batch with no filter should execute all
+    registered scenarios and return a well-formed batched result.  In test
+    mode (fake providers) every scenario is expected to pass because the
+    expectations are calibrated to the fake provider output range.
+    """
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/v1/validation/run-scenario-batch", json={})
+
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["contract_version"] == "2026-04-16"
+    assert isinstance(payload["total"], int) and payload["total"] > 0
+    assert payload["errors"] == 0, f"Unexpected errors in batch: {payload.get('results')}"
+    assert payload["failed"] == 0, (
+        f"Unexpected failures in batch: "
+        f"{[r for r in payload['results'] if r['pipeline_status'] == 'fail']}"
+    )
+    assert payload["passed"] == payload["total"]
+
+    for result in payload["results"]:
+        assert result["pipeline_status"] == "pass"
+        assert result["completeness_score"] is not None
+        assert result["predicted_price"] is not None
+        assert result["issues"] == []
+        assert isinstance(result["key_feature_values"], dict)
+
+
+def test_run_scenario_batch_single_scenario_by_id(tmp_path: Path):
+    """Filtering by scenario_id should return only the specified scenario."""
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/v1/validation/run-scenario-batch",
+            json={"scenario_ids": ["college-town-ia"]},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    assert payload["results"][0]["scenario_id"] == "college-town-ia"
+    assert payload["results"][0]["pipeline_status"] == "pass"
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for bugs fixed in the audit pass
+# ---------------------------------------------------------------------------
+
+def test_baseline_with_null_completeness_score_does_not_raise(tmp_path: Path):
+    """Regression for Bug 1: passing expectations with min_completeness_score=None
+    must not raise TypeError when the completeness check is skipped.
+    The baseline should still evaluate required_features checks.
+    """
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/v1/validation/address-baseline",
+            json={
+                "address_line_1": "100 E Ohio St",
+                "city": "Chicago",
+                "state": "IL",
+                "postal_code": "60611",
+                "country": "US",
+                "expectations": {
+                    # No completeness threshold — only required-features check
+                    "min_completeness_score": None,
+                    "required_features": ["BedroomAbvGr", "GrLivArea"],
+                    "feature_bounds": {},
+                },
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    # No completeness_threshold check should exist in checks
+    check_names = [c["check_name"] for c in payload["assessment"]["checks"]]
+    assert "completeness_threshold" not in check_names
+    # Required feature checks must be present
+    assert any(n.startswith("required_feature:") for n in check_names)
+    # Overall status must be a valid value, not an error
+    assert payload["assessment"]["overall_status"] in {"passed", "failed"}
+
+
+def test_full_audit_passing_baseline_with_missing_features_has_no_issues(tmp_path: Path):
+    """Regression for Bug 2: when expectations are provided and the baseline
+    assessment passes (threshold met), run_full_audit must NOT append an extra
+    'Missing model features' issue entry just because some features were absent.
+    The batch runner would falsely mark those scenarios as 'fail'.
+    """
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        # Use a low completeness threshold that will definitely pass,
+        # ensuring the baseline assessment is "passed" even if some features miss.
+        response = client.post(
+            "/v1/validation/full-audit",
+            json={
+                "address_line_1": "300 W Grand Ave",
+                "city": "Chicago",
+                "state": "IL",
+                "postal_code": "60654",
+                "country": "US",
+                "expectations": {
+                    "min_completeness_score": 0.01,  # near-zero: will definitely pass
+                    "required_features": [],
+                    "feature_bounds": {},
+                },
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["baseline"]["assessment"]["overall_status"] == "passed"
+    # A passing baseline must not generate a spurious "Missing model features" issue
+    for issue in payload["issues"]:
+        assert "Missing model features" not in issue, (
+            f"Spurious missing-feature issue found despite passing baseline: {issue}"
+        )
+
+
+def test_full_audit_not_evaluated_baseline_surfaces_missing_feature_count(tmp_path: Path):
+    """When no expectations are given (not_evaluated), missing features should
+    be surfaced in issues so the caller knows the data quality state.
+    """
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        # Send no expectations at all
+        response = client.post(
+            "/v1/validation/full-audit",
+            json={
+                "address_line_1": "413 Duff Ave",
+                "city": "Ames",
+                "state": "IA",
+                "postal_code": "50010",
+                "country": "US",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["baseline"]["assessment"]["overall_status"] == "not_evaluated"
+    # Fake provider returns all features → missing count is 0 → no issue appended.
+    # This asserts the contract: if 0 missing, no issue; if > 0, issue IS present.
+    missing_count = payload["baseline"]["features"]["missing_feature_count"]
+    has_missing_issue = any("Missing model features" in i for i in payload["issues"])
+    if missing_count == 0:
+        assert not has_missing_issue
+    else:
+        assert has_missing_issue
+
+
+def test_baseline_contract_version_is_consistent(tmp_path: Path):
+    """contract_version in baseline and full-audit responses must match."""
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        baseline_resp = client.post(
+            "/v1/validation/address-baseline",
+            json={
+                "address_line_1": "1 Infinite Loop",
+                "city": "Cupertino",
+                "state": "CA",
+                "postal_code": "95014",
+                "country": "US",
+            },
+        )
+        audit_resp = client.post(
+            "/v1/validation/full-audit",
+            json={
+                "address_line_1": "1 Infinite Loop",
+                "city": "Cupertino",
+                "state": "CA",
+                "postal_code": "95014",
+                "country": "US",
+            },
+        )
+
+    assert baseline_resp.status_code == 200
+    assert audit_resp.status_code == 200
+    assert baseline_resp.json()["contract_version"] == audit_resp.json()["contract_version"]
+    assert baseline_resp.json()["contract_version"] == "2026-04-16"
+
+
+def test_init_database_is_migration_first_by_default(tmp_path: Path):
+    database_url = f"sqlite:///{tmp_path / 'migration_first.db'}"
+    session_factory = init_database(database_url)
+
+    with session_factory() as session:
+        table_rows = session.execute(
+            text(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'table'
+                """
+            )
+        ).fetchall()
+
+    table_names = {row[0] for row in table_rows}
+    assert "prediction_requests" not in table_names
+    assert "workflow_events" not in table_names
+
+
+def test_predictions_list_response_includes_pagination_metadata(tmp_path: Path):
+    """PredictionListResponse must carry total, limit, and offset fields."""
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        for address_line_1 in ["1 Alpha Rd", "2 Beta Rd", "3 Gamma Rd"]:
+            r = client.post(
+                "/v1/predictions",
+                json={
+                    "address_line_1": address_line_1,
+                    "city": "Denver",
+                    "state": "CO",
+                    "postal_code": "80201",
+                    "country": "US",
+                },
+            )
+            assert r.status_code == 201
+
+        # First page: limit=2, offset=0
+        first_page = client.get("/v1/predictions?limit=2&offset=0")
+    assert first_page.status_code == 200
+    payload = first_page.json()
+    assert payload["total"] == 3
+    assert payload["limit"] == 2
+    assert payload["offset"] == 0
+    assert len(payload["items"]) == 2
+
+
+def test_predictions_list_offset_returns_correct_page(tmp_path: Path):
+    """offset parameter must skip the right number of rows."""
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        ids_in_order: list[str] = []
+        for address_line_1 in ["10 First St", "20 Second St", "30 Third St"]:
+            r = client.post(
+                "/v1/predictions",
+                json={
+                    "address_line_1": address_line_1,
+                    "city": "Austin",
+                    "state": "TX",
+                    "postal_code": "78701",
+                    "country": "US",
+                },
+            )
+            assert r.status_code == 201
+            ids_in_order.append(r.json()["prediction_id"])
+
+        all_items = client.get("/v1/predictions?limit=50&offset=0").json()["items"]
+        second_page = client.get("/v1/predictions?limit=2&offset=2").json()
+
+    # Results are newest-first, so third (last submitted) is at index 0 in all_items.
+    assert second_page["offset"] == 2
+    assert len(second_page["items"]) == 1
+    assert second_page["items"][0]["prediction_id"] == all_items[2]["prediction_id"]
+
+
+def test_fresh_prediction_has_null_confidence_score(tmp_path: Path):
+    """confidence_score must be None for fresh (non-reused) predictions.
+
+    Completeness score is a feature-coverage metric, not model confidence.
+    Storing them as the same field misleads API consumers.
+    """
+    settings = build_test_settings(tmp_path)
+
+    with TestClient(create_app(settings)) as client:
+        r = client.post(
+            "/v1/predictions",
+            json={
+                "address_line_1": "77 Oak Lane",
+                "city": "Portland",
+                "state": "OR",
+                "postal_code": "97201",
+                "country": "US",
+            },
+        )
+        assert r.status_code == 201
+        prediction_id = r.json()["prediction_id"]
+        assert r.json()["confidence_score"] is None
+
+        detail = client.get(f"/v1/predictions/{prediction_id}")
+    assert detail.status_code == 200
+    assert detail.json()["confidence_score"] is None
+    # completeness_score still reaches the caller via the feature_snapshot
+    assert detail.json()["feature_snapshot"]["completeness_score"] > 0.0

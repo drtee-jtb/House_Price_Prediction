@@ -1,4 +1,4 @@
-.PHONY: setup bootstrap-data train predict test lint clean smoke-api smoke-real ci-verify
+.PHONY: setup bootstrap-data train predict test lint clean smoke-api smoke-real ci-verify export-openapi
 
 setup:
 	python -m venv .venv
@@ -24,6 +24,9 @@ smoke-real:
 	rm -f data/processed/real_validation.db
 	ENABLE_MOCK_PREDICTOR=false GEOCODING_PROVIDER=free-fallback PROPERTY_DATA_PROVIDER=free-fallback PREDICTION_REUSE_MAX_AGE_HOURS=0 DATABASE_URL=sqlite:///data/processed/real_validation.db python scripts/smoke_api.py
 
+export-openapi:
+	python scripts/export_openapi.py
+
 ci-verify:
 	python scripts/bootstrap_training_data.py
 	python scripts/train.py
@@ -32,6 +35,7 @@ ci-verify:
 	DATABASE_URL=sqlite:///data/processed/smoke_validation.db PREDICTION_REUSE_MAX_AGE_HOURS=0 python scripts/smoke_api.py
 	rm -f data/processed/real_validation.db
 	ENABLE_MOCK_PREDICTOR=false GEOCODING_PROVIDER=free-fallback PROPERTY_DATA_PROVIDER=free-fallback PREDICTION_REUSE_MAX_AGE_HOURS=0 DATABASE_URL=sqlite:///data/processed/real_validation.db python scripts/smoke_api.py
+	python scripts/export_openapi.py
 
 lint:
 	python -m py_compile src/house_price_prediction/*.py scripts/*.py

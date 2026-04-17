@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
@@ -28,6 +28,9 @@ class Settings:
     prediction_reuse_max_age_hours: int
     provider_timeout_seconds: float
     provider_max_retries: int
+    feature_policy_name: str = "balanced-v1"
+    feature_policy_version: str = "v1"
+    feature_policy_state_overrides: dict[str, str] = field(default_factory=dict)
 
 
 def _get_bool_env(name: str, default: bool) -> bool:
@@ -35,6 +38,23 @@ def _get_bool_env(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_feature_policy_state_overrides(raw: str) -> dict[str, str]:
+    overrides: dict[str, str] = {}
+    if not raw.strip():
+        return overrides
+
+    for chunk in raw.split(","):
+        entry = chunk.strip()
+        if not entry or ":" not in entry:
+            continue
+        state, policy_name = entry.split(":", 1)
+        normalized_state = state.strip().upper()
+        normalized_policy_name = policy_name.strip()
+        if normalized_state and normalized_policy_name:
+            overrides[normalized_state] = normalized_policy_name
+    return overrides
 
 
 @lru_cache(maxsize=1)
@@ -63,4 +83,9 @@ def load_settings() -> Settings:
         prediction_reuse_max_age_hours=int(os.getenv("PREDICTION_REUSE_MAX_AGE_HOURS", "24")),
         provider_timeout_seconds=float(os.getenv("PROVIDER_TIMEOUT_SECONDS", "3.0")),
         provider_max_retries=int(os.getenv("PROVIDER_MAX_RETRIES", "2")),
+        feature_policy_name=os.getenv("FEATURE_POLICY_NAME", "balanced-v1"),
+        feature_policy_version=os.getenv("FEATURE_POLICY_VERSION", "v1"),
+        feature_policy_state_overrides=_parse_feature_policy_state_overrides(
+            os.getenv("FEATURE_POLICY_STATE_OVERRIDES", "")
+        ),
     )
