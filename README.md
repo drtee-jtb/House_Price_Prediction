@@ -2,6 +2,10 @@
 
 End-to-end machine learning scaffold for training and serving a house price regression model.
 
+## 🚀 Live Dashboard
+
+**Try it now:** [House Price Prediction Dashboard](https://house-price-prediction-1-vrwx.onrender.com)
+
 ## Project Structure
 
 ```text
