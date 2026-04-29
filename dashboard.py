@@ -184,7 +184,29 @@ def load_data():
     df = load_dataset(settings.raw_data_path)
     return df
 
+# Load trained model from pickle/joblib file
+@st.cache_resource
+def load_trained_model():
+    """Load the trained model artifact from the joblib file."""
+    import os
+    from pathlib import Path
+    from src.house_price_prediction.model import load_model_artifact
+    
+    model_path = Path(__file__).parent / "models" / "house_price_model.joblib"
+    
+    if not model_path.exists():
+        st.warning(f"⚠️ Model file not found at {model_path}")
+        return None
+    
+    try:
+        artifact = load_model_artifact(model_path)
+        return artifact
+    except Exception as e:
+        st.error(f"Error loading model: {e}")
+        return None
+
 df = load_data()
+model_artifact = load_trained_model()
 
 
 def call_api(method: str, base_url: str, path: str, payload: dict | None = None, params: dict | None = None):
@@ -626,7 +648,7 @@ if runtime_health is not None:
 # Page selection
 page = st.sidebar.radio(
     "Select a page:",
-    ["Overview", "Data Analysis", "Feature Exploration", "Statistics", "Address Lookup", "Live API Tester"]
+    ["Overview", "Data Analysis", "Feature Exploration", "Statistics", "Address Lookup", "Local Predictions", "Live API Tester"]
 )
 
 # ==================== PAGE: OVERVIEW ====================
@@ -637,6 +659,21 @@ if page == "Overview":
         <p style="color: #666; font-size: 1.1rem;">Explore the housing dataset with interactive visualizations</p>
     </div>
     """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Model Status
+    if model_artifact:
+        st.success("✅ **Trained Model Loaded** from `models/house_price_model.joblib`")
+        col_meta1, col_meta2, col_meta3 = st.columns(3)
+        with col_meta1:
+            st.metric("Model Name", model_artifact.metadata.model_name or "Random Forest")
+        with col_meta2:
+            st.metric("Features", len(model_artifact.metadata.feature_columns))
+        with col_meta3:
+            st.metric("Version", model_artifact.metadata.model_version or "1.0")
+    else:
+        st.warning("⚠️ No trained model found. Train a model using `scripts/train.py`")
     
     st.markdown("---")
     
@@ -664,33 +701,41 @@ if page == "Overview":
         df, 
         x='price', 
         nbins=50,
-        title='Price Distribution',
         labels={'price': 'Price ($)'},
         color_discrete_sequence=['#636EFA']
     )
     fig.update_layout(
         height=450, 
-        margin=dict(l=40, r=40, t=80, b=40),
-        title_x=0.5,
-        title_xanchor='center',
-        title_font_size=18
+        margin=dict(l=40, r=40, t=40, b=40)
     )
-    st.plotly_chart(fig, use_container_width=True, config={'responsive': True})
+    fig.add_annotation(
+        text="<b>Price Distribution</b>",
+        xref="paper", yref="paper",
+        x=0.5, y=1.08,
+        showarrow=False,
+        font=dict(size=16, color="#667eea"),
+        xanchor="center"
+    )
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
     
     fig = px.box(
         df, 
         y='price',
-        title='Price Box Plot',
         color_discrete_sequence=['#636EFA']
     )
     fig.update_layout(
         height=450, 
-        margin=dict(l=40, r=40, t=80, b=40),
-        title_x=0.5,
-        title_xanchor='center',
-        title_font_size=18
+        margin=dict(l=40, r=40, t=40, b=40)
     )
-    st.plotly_chart(fig, use_container_width=True, config={'responsive': True})
+    fig.add_annotation(
+        text="<b>Price Box Plot</b>",
+        xref="paper", yref="paper",
+        x=0.5, y=1.08,
+        showarrow=False,
+        font=dict(size=16, color="#667eea"),
+        xanchor="center"
+    )
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
 # ==================== PAGE: DATA ANALYSIS ====================
 elif page == "Data Analysis":
@@ -1236,6 +1281,165 @@ elif page == "Address Lookup":
             st.info("💡 Predict an address price using the button above to start comparing properties!")
 
 
+<<<<<<< HEAD
+=======
+# ==================== PAGE: LOCAL PREDICTIONS ====================
+elif page == "Local Predictions":
+    st.title("🧠 Local Predictions (Offline Model)")
+    st.markdown(
+        "Make predictions using the trained model loaded from `models/house_price_model.joblib` "
+        "without needing the backend API."
+    )
+    
+    if not model_artifact:
+        st.error("❌ No trained model available. Please train a model first using `scripts/train.py`")
+    else:
+        st.success("✅ Trained model loaded successfully!")
+        
+        # Display model info
+        with st.expander("📋 Model Information", expanded=False):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Model Type", model_artifact.metadata.model_name or "Random Forest Regressor")
+            with col2:
+                st.metric("Feature Count", len(model_artifact.metadata.feature_columns))
+            with col3:
+                st.metric("Target", model_artifact.metadata.target_column or "price")
+            
+            st.write("**Features:**")
+            st.write(", ".join(model_artifact.metadata.feature_columns[:10]))
+            if len(model_artifact.metadata.feature_columns) > 10:
+                st.caption(f"... and {len(model_artifact.metadata.feature_columns) - 10} more")
+        
+        st.markdown("---")
+        
+        # Input form for predictions
+        st.subheader("📊 Make a Prediction")
+        
+        with st.form("local_prediction_form"):
+            st.write("Enter property features to predict the price:")
+            
+            # Create input fields based on available features
+            # Using common housing features
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                bedrooms = st.number_input("Bedrooms", min_value=0, max_value=15, value=3)
+                bathrooms = st.number_input("Bathrooms", min_value=0.0, max_value=10.0, value=2.0, step=0.5)
+                grade = st.number_input("Grade (Quality 1-13)", min_value=1, max_value=13, value=7)
+            
+            with col2:
+                sqft_living = st.number_input("Living Area (sqft)", min_value=500, max_value=10000, value=2000, step=100)
+                sqft_lot = st.number_input("Lot Area (sqft)", min_value=1000, max_value=100000, value=10000, step=100)
+                floors = st.number_input("Floors", min_value=1.0, max_value=5.0, value=1.0, step=0.5)
+            
+            with col3:
+                condition = st.number_input("Condition (1-5)", min_value=1, max_value=5, value=3)
+                yr_built = st.number_input("Year Built", min_value=1800, max_value=2026, value=2000)
+                waterfront = st.checkbox("Waterfront Property")
+            
+            submit_button = st.form_submit_button("🔮 Predict Price", use_container_width=True)
+        
+        if submit_button:
+            try:
+                # Prepare input data
+                # This assumes the model expects these features as they are
+                features_dict = {
+                    'bedrooms': bedrooms,
+                    'bathrooms': bathrooms,
+                    'sqft_living': sqft_living,
+                    'sqft_lot': sqft_lot,
+                    'grade': grade,
+                    'condition': condition,
+                    'yr_built': yr_built,
+                    'floors': floors,
+                    'waterfront': 1 if waterfront else 0,
+                }
+                
+                # Convert to DataFrame with proper column order
+                input_df = pd.DataFrame([features_dict])
+                
+                with st.spinner("🧠 Generating prediction..."):
+                    # Make prediction
+                    predicted_price = model_artifact.model.predict(input_df)[0]
+                
+                # Display results
+                st.markdown("---")
+                st.success("✅ Prediction Complete!")
+                
+                col_price, col_range = st.columns([2, 1])
+                with col_price:
+                    st.metric("Predicted Price", f"${predicted_price:,.0f}", delta=None)
+                
+                # Show input summary
+                st.subheader("📝 Input Summary")
+                summary_data = {
+                    'Feature': list(features_dict.keys()),
+                    'Value': list(features_dict.values())
+                }
+                st.dataframe(pd.DataFrame(summary_data), use_container_width=True)
+                
+            except Exception as e:
+                st.error(f"❌ Prediction failed: {str(e)}")
+                st.write("Make sure all required features are provided in the correct format.")
+        
+        st.markdown("---")
+        
+        # Batch predictions from dataset
+        st.subheader("📦 Batch Predictions from Dataset")
+        
+        if st.button("Predict on Dataset Sample (first 100 rows)", use_container_width=True):
+            try:
+                # Get sample from dataset
+                sample_df = df.head(100).copy()
+                
+                # Select only features that the model expects
+                features_for_model = [f for f in model_artifact.metadata.feature_columns if f in sample_df.columns]
+                sample_features = sample_df[features_for_model]
+                
+                with st.spinner("🧠 Generating batch predictions..."):
+                    predictions = model_artifact.model.predict(sample_features)
+                
+                # Add predictions to dataframe
+                results_df = sample_df.copy()
+                results_df['predicted_price'] = predictions
+                results_df['actual_price'] = sample_df.get('price', None)
+                
+                if 'price' in sample_df.columns:
+                    results_df['difference'] = results_df['actual_price'] - results_df['predicted_price']
+                    results_df['percent_error'] = (results_df['difference'] / results_df['actual_price'] * 100).abs()
+                
+                st.success(f"✅ Generated {len(predictions)} predictions!")
+                
+                # Show summary statistics
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Avg Predicted", f"${predictions.mean():,.0f}")
+                with col2:
+                    st.metric("Min Predicted", f"${predictions.min():,.0f}")
+                with col3:
+                    st.metric("Max Predicted", f"${predictions.max():,.0f}")
+                with col4:
+                    if 'price' in sample_df.columns:
+                        errors = results_df['percent_error']
+                        st.metric("Avg Error %", f"{errors.mean():.1f}%")
+                
+                # Show results table
+                st.write("**Predictions:**")
+                display_cols = ['predicted_price', 'actual_price'] if 'price' in sample_df.columns else ['predicted_price']
+                if 'difference' in results_df.columns:
+                    display_cols.append('difference')
+                
+                st.dataframe(
+                    results_df[display_cols + ['bedrooms', 'bathrooms', 'sqft_living', 'grade']].head(20),
+                    use_container_width=True
+                )
+                
+            except Exception as e:
+                st.error(f"❌ Batch prediction failed: {str(e)}")
+
+# ==================== PAGE: LIVE API TESTER ====================
+>>>>>>> f643b67 (latest changes)
 elif page == "Live API Tester":
     st.title("🧪 Live API Tester")
     st.markdown(
