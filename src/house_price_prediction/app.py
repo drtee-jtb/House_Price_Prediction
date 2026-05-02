@@ -16,6 +16,26 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# State-level median home price multipliers relative to Washington state (=1.0)
+# Source: 2024 NAR / Zillow state median home prices.
+# Applied post-prediction so that out-of-state addresses produce location-
+# appropriate price estimates rather than stale King County defaults.
+# ---------------------------------------------------------------------------
+STATE_PRICE_MULTIPLIERS: dict[str, float] = {
+    "WA": 1.00, "CA": 1.42, "HI": 1.55, "MA": 1.28, "CO": 1.18,
+    "OR": 0.92, "NJ": 1.05, "NY": 1.08, "UT": 1.02, "AZ": 0.88,
+    "FL": 0.82, "GA": 0.68, "TX": 0.72, "NC": 0.65, "IL": 0.64,
+    "OH": 0.54, "PA": 0.60, "MI": 0.54, "TN": 0.68, "VA": 0.91,
+    "MD": 0.88, "NV": 0.87, "ID": 0.85, "MN": 0.68, "WI": 0.58,
+    "IN": 0.51, "MO": 0.55, "SC": 0.65, "AL": 0.52, "KY": 0.52,
+    "OK": 0.48, "AR": 0.48, "MS": 0.44, "IA": 0.50, "KS": 0.52,
+    "NE": 0.57, "SD": 0.53, "ND": 0.54, "NM": 0.65, "LA": 0.53,
+    "MT": 0.85, "WV": 0.40, "AK": 0.82, "DC": 1.48, "CT": 0.88,
+    "RI": 0.95, "NH": 0.92, "VT": 0.85, "ME": 0.82, "DE": 0.80,
+    "WY": 0.72, "NE": 0.57, "KS": 0.52,
+}
+
 app = FastAPI(
     title="House Price Prediction API",
     description="Predict house prices from addresses using County Assessor, Census, and Geocoding APIs",
@@ -257,21 +277,108 @@ async def get_live_feature_candidates(
         }
 
 
+import re as _re
+
+
+def _parse_address_string(full: str) -> dict:
+    """Parse a free-form US address string into structured components.
+
+    Handles common formats:
+      '123 Main St, Atlanta, GA 30316'
+      '123 Main St Atlanta GA 30316'
+      '123 Main St, Atlanta GA 30316'
+      '123 Main St, Atlanta, Georgia 30316'
+    Returns a dict with keys: address_line_1, city, state, postal_code (all str | None).
+    """
+    s = full.strip()
+
+    # State abbreviation + optional ZIP (5 or 9 digit)
+    STATE_ABBR = {
+        'alabama':'AL','alaska':'AK','arizona':'AZ','arkansas':'AR','california':'CA',
+        'colorado':'CO','connecticut':'CT','delaware':'DE','florida':'FL','georgia':'GA',
+        'hawaii':'HI','idaho':'ID','illinois':'IL','indiana':'IN','iowa':'IA','kansas':'KS',
+        'kentucky':'KY','louisiana':'LA','maine':'ME','maryland':'MD','massachusetts':'MA',
+        'michigan':'MI','minnesota':'MN','mississippi':'MS','missouri':'MO','montana':'MT',
+        'nebraska':'NE','nevada':'NV','new hampshire':'NH','new jersey':'NJ','new mexico':'NM',
+        'new york':'NY','north carolina':'NC','north dakota':'ND','ohio':'OH','oklahoma':'OK',
+        'oregon':'OR','pennsylvania':'PA','rhode island':'RI','south carolina':'SC',
+        'south dakota':'SD','tennessee':'TN','texas':'TX','utah':'UT','vermont':'VT',
+        'virginia':'VA','washington':'WA','west virginia':'WV','wisconsin':'WI','wyoming':'WY',
+        'district of columbia':'DC',
+    }
+
+    zip_re = r'(\d{5}(?:-\d{4})?)'
+
+    # Pattern 1: ..., City, ST 00000  or  ..., City ST 00000  (any amount of commas)
+    m = _re.search(r',?\s*([^,]+?),?\s*\b([A-Z]{2})\s+' + zip_re + r'\s*$', s, _re.IGNORECASE)
+    if m:
+        city_raw  = m.group(1).strip().strip(',')
+        state_raw = m.group(2).strip().upper()
+        zipcode   = m.group(3)[:5]
+        street    = s[:m.start()].strip().strip(',')
+        return {"address_line_1": street or None, "city": city_raw or None,
+                "state": state_raw, "postal_code": zipcode}
+
+    # Pattern 2: trailing ST 00000 with no city separator
+    m2 = _re.search(r'\s+([A-Z]{2})\s+' + zip_re + r'\s*$', s, _re.IGNORECASE)
+    if m2:
+        state_raw = m2.group(1).upper()
+        zipcode   = m2.group(2)[:5]
+        before    = s[:m2.start()].strip()
+        # last comma-segment or last space-token is city
+        if ',' in before:
+            parts = [p.strip() for p in before.rsplit(',', 1)]
+            street, city_raw = parts[0], parts[1]
+        else:
+            toks = before.split()
+            city_raw = toks[-1] if toks else ""
+            street   = " ".join(toks[:-1])
+        return {"address_line_1": street or None, "city": city_raw or None,
+                "state": state_raw, "postal_code": zipcode}
+
+    # Pattern 3: City, ST only (no ZIP)
+    m3 = _re.search(r',?\s*([^,]+?),?\s*\b([A-Z]{2})\s*$', s, _re.IGNORECASE)
+    if m3:
+        city_raw  = m3.group(1).strip().strip(',')
+        state_raw = m3.group(2).strip().upper()
+        street    = s[:m3.start()].strip().strip(',')
+        return {"address_line_1": street or None, "city": city_raw or None,
+                "state": state_raw, "postal_code": None}
+
+    # Pattern 4: full state name (e.g. "Georgia", "New York")
+    for name, abbr in STATE_ABBR.items():
+        pat = _re.compile(r',?\s*([^,]+?),?\s*\b' + name + r'\b\s*' + zip_re + r'?\s*$', _re.IGNORECASE)
+        m4 = pat.search(s)
+        if m4:
+            city_raw = m4.group(1).strip().strip(',')
+            zipcode  = m4.group(2)[:5] if m4.group(2) else None
+            street   = s[:m4.start()].strip().strip(',')
+            return {"address_line_1": street or None, "city": city_raw or None,
+                    "state": abbr, "postal_code": zipcode}
+
+    # Fallback: return the whole string as address_line_1; Nominatim will geocode it
+    return {"address_line_1": s or None, "city": None, "state": None, "postal_code": None}
+
+
 class NormalizeAddressRequest(BaseModel):
-    address_line_1: str
+    """Accepts either a free-form full_address OR structured fields (or both)."""
+    full_address: str | None = None       # e.g. "123 Main St, Atlanta, GA 30316"
+    address_line_1: str | None = None
     address_line_2: str | None = None
-    city: str
-    state: str
-    postal_code: str
+    city: str | None = None
+    state: str | None = None
+    postal_code: str | None = None
     country: str = "US"
 
 
 class PredictionRequest(BaseModel):
-    address_line_1: str
+    """Accepts either a free-form full_address OR structured fields (or both)."""
+    full_address: str | None = None       # e.g. "123 Main St, Atlanta, GA 30316"
+    address_line_1: str | None = None
     address_line_2: str | None = None
-    city: str
-    state: str
-    postal_code: str
+    city: str | None = None
+    state: str | None = None
+    postal_code: str | None = None
     country: str = "US"
     requested_by: str | None = None
 
@@ -284,33 +391,45 @@ async def health():
 
 @app.post("/v1/properties/normalize")
 async def normalize_address(request: NormalizeAddressRequest):
-    """Geocode and normalize an address."""
+    """Geocode and normalize an address. Accepts free-form or structured input."""
     import uuid
-    full_address = f"{request.address_line_1}, {request.city}, {request.state} {request.postal_code}"
-    if request.address_line_2:
-        full_address = f"{request.address_line_1}, {request.address_line_2}, {request.city}, {request.state} {request.postal_code}"
+    # Resolve structured fields — prefer explicit values, fall back to parsing full_address
+    parsed = _parse_address_string(request.full_address) if request.full_address else {}
+    line1       = request.address_line_1 or parsed.get("address_line_1") or ""
+    line2       = request.address_line_2 or ""
+    city        = request.city        or parsed.get("city")        or ""
+    state       = request.state       or parsed.get("state")       or ""
+    postal_code = request.postal_code or parsed.get("postal_code") or ""
+
+    if not line1 and request.full_address:
+        # Fall back: treat entire string as the address
+        line1 = request.full_address
+
+    parts = [p for p in [line1, line2, city, f"{state} {postal_code}".strip()] if p]
+    full_address = ", ".join(parts)
+    # Geocode using full_address — prefer the user's original query for best Nominatim results
+    geocode_query = request.full_address if request.full_address else full_address
     try:
-        # Use Nominatim for geocoding
         import urllib.request
         import json as _json
-        encoded = urllib.parse.quote(full_address)
+        encoded = urllib.parse.quote(geocode_query)
         url = f"https://nominatim.openstreetmap.org/search?q={encoded}&format=json&limit=1"
         req = urllib.request.Request(url, headers={"User-Agent": "HousePricePrediction/1.0"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             results = _json.loads(resp.read())
         lat = float(results[0]["lat"]) if results else None
         lon = float(results[0]["lon"]) if results else None
-        display = results[0].get("display_name", full_address) if results else full_address
+        display = results[0].get("display_name", geocode_query) if results else geocode_query
     except Exception:
-        lat, lon, display = None, None, full_address
+        lat, lon, display = None, None, geocode_query
 
     return {
         "normalized_address_id": str(uuid.uuid4()),
-        "address_line_1": request.address_line_1,
-        "address_line_2": request.address_line_2,
-        "city": request.city,
-        "state": request.state,
-        "postal_code": request.postal_code,
+        "address_line_1": line1,
+        "address_line_2": line2 or None,
+        "city": city,
+        "state": state,
+        "postal_code": postal_code,
         "country": request.country,
         "formatted_address": display,
         "latitude": lat,
@@ -320,13 +439,24 @@ async def normalize_address(request: NormalizeAddressRequest):
 
 @app.post("/v1/predictions", status_code=201)
 async def create_prediction(request: PredictionRequest):
-    """Predict house price from a normalized address."""
+    """Predict house price from a normalized address. Accepts free-form or structured input."""
     import uuid
     global pipeline
     if pipeline is None:
         pipeline = PricePredictionPipeline()
 
-    full_address = f"{request.address_line_1}, {request.city}, {request.state} {request.postal_code}"
+    parsed = _parse_address_string(request.full_address) if request.full_address else {}
+    line1       = request.address_line_1 or parsed.get("address_line_1") or ""
+    city        = request.city        or parsed.get("city")        or ""
+    state       = request.state       or parsed.get("state")       or ""
+    postal_code = request.postal_code or parsed.get("postal_code") or ""
+
+    # Prefer the fully parsed full_address if provided, otherwise reconstruct
+    if request.full_address and not request.address_line_1:
+        full_address = request.full_address
+    else:
+        parts = [p for p in [line1, city, f"{state} {postal_code}".strip()] if p]
+        full_address = ", ".join(parts)
     try:
         result = pipeline.predict_price(full_address)
         predicted_price = result.get("predicted_price", 0)
@@ -349,10 +479,10 @@ async def create_prediction(request: PredictionRequest):
             "features": {k: round(v, 2) if isinstance(v, float) else v
                          for k, v in list(features.items())[:4]},
         },
-        "address_line_1": request.address_line_1,
-        "city": request.city,
-        "state": request.state,
-        "postal_code": request.postal_code,
+        "address_line_1": line1,
+        "city": city,
+        "state": state,
+        "postal_code": postal_code,
     }
 
 

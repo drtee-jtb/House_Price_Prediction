@@ -187,19 +187,22 @@ def load_data():
 # Load trained model from pickle/joblib file
 @st.cache_resource
 def load_trained_model():
-    """Load the trained model artifact from the pkl file."""
-    import os
+    """Load the most recently modified model artifact (.pkl or .joblib) from the models directory."""
     from pathlib import Path
     from src.house_price_prediction.model import load_model_artifact
-    
-    model_path = Path(__file__).parent / "models" / "house_price_model.pkl"
-    
-    if not model_path.exists():
-        st.warning(f"⚠️ Model file not found at {model_path}")
+
+    models_dir = Path(__file__).parent / "models"
+    candidates = list(models_dir.glob("*.pkl")) + list(models_dir.glob("*.joblib"))
+
+    if not candidates:
+        st.warning(f"⚠️ No model files found in {models_dir}")
         return None
-    
+
+    model_path = max(candidates, key=lambda p: p.stat().st_mtime)
+
     try:
         artifact = load_model_artifact(model_path)
+        st.sidebar.info(f"Model loaded: `{model_path.name}`")
         return artifact
     except Exception as e:
         st.error(f"Error loading model: {e}")
@@ -318,7 +321,7 @@ def render_prediction_result(slot_index: int) -> None:
                 with feat_cols[idx % 4]:
                     st.metric(feat_name, feat_val)
     elif prediction_error:
-        st.error(prediction_error["message"])
+        st.error(prediction_error.get("message", "Prediction failed"))
         detail = prediction_error.get("detail")
         if detail:
             if isinstance(detail, str):
@@ -331,77 +334,257 @@ def render_market_metrics(metrics: dict) -> None:
     """Display the 5 calculated market metrics."""
     if not metrics:
         return
-    
+
     st.markdown("---")
     st.markdown("""
-    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 25px; border-radius: 12px; margin-bottom: 25px; text-align: center; animation: slideInDown 0.7s ease-out; box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);">
-        <h2 style="color: white; margin: 0; font-size: 2.2em; text-align: center; letter-spacing: 0.5px; animation: slideInDown 0.8s ease-out;">🏠 House Price Prediction with Socioeconomic Indicators</h2>
+    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 12px; margin-bottom: 20px; text-align: center; box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);">
+        <h2 style="color: white; margin: 0; font-size: 1.6em; letter-spacing: 0.5px;">🏠 Market Overview</h2>
     </div>
     """, unsafe_allow_html=True)
-    
-    # 1. Neighborhood Stats
+
+    # ── 1. Neighborhood Stats — 3 + 2 layout so values never truncate ─────────
     if "neighborhood_stats" in metrics:
-        st.markdown("**Neighborhood Statistics**")
+        st.markdown("#### 📍 Neighborhood Statistics")
         ns = metrics["neighborhood_stats"]
-        col1, col2, col3, col4, col5 = st.columns(5)
-        with col1:
-            st.metric("Avg Price", f"${ns['avg_price']:,.0f}")
-        with col2:
-            st.metric("Median Price", f"${ns['median_price']:,.0f}")
-        with col3:
-            st.metric("Min Price", f"${ns['price_range'][0]:,.0f}")
-        with col4:
-            st.metric("Max Price", f"${ns['price_range'][1]:,.0f}")
-        with col5:
-            st.metric("# Properties", f"{ns['total_properties']}")
-    
-    # 2. Property Characteristics
+        r1c1, r1c2, r1c3 = st.columns(3)
+        r1c1.metric("Avg Price",    f"${ns['avg_price']:,.0f}")
+        r1c2.metric("Median Price", f"${ns['median_price']:,.0f}")
+        r1c3.metric("# Properties", f"{ns['total_properties']:,}")
+
+        r2c1, r2c2, r2c3 = st.columns(3)
+        r2c1.metric("Min Price", f"${ns['price_range'][0]:,.0f}")
+        r2c2.metric("Max Price", f"${ns['price_range'][1]:,.0f}")
+
+    # ── 2. Property Characteristics — 4-across grid, one metric per cell ──────
     if "property_characteristics" in metrics:
-        st.markdown("**Average Property Characteristics**")
+        st.markdown("#### 🏡 Average Property Characteristics")
         pc = metrics["property_characteristics"]
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Lot Area (sqft)", f"{pc['avg_lot_area']:,.0f}")
-            st.metric("Grade (1-13)", f"{pc['avg_grade']:.1f}")
-            st.metric("Living Area (sqft)", f"{pc['avg_living_area']:,.0f}")
-        with col2:
-            st.metric("Condition (1-5)", f"{pc['avg_condition']:.1f}")
-            st.metric("Bathrooms", f"{pc['avg_bathrooms']:.1f}")
-            st.metric("Bedrooms", f"{pc['avg_bedrooms']:.1f}")
-        with col3:
-            st.metric("Floors", f"{pc['avg_floors']:.1f}")
-    
-    # 3. Market Data
-    if "market_data" in metrics:
-        st.markdown("**Market Data**")
-        md = metrics["market_data"]
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Avg Price/sqft", f"${md['avg_price_per_sqft']:.2f}")
-        with col2:
-            st.metric("Median Price/sqft", f"${md['median_price_per_sqft']:.2f}")
-    
-    # 4. Age Estimate
+
+        rc1, rc2, rc3, rc4 = st.columns(4)
+        rc1.metric("Living Area",  f"{pc['avg_living_area']:,.0f} sqft")
+        rc2.metric("Lot Area",     f"{pc['avg_lot_area']:,.0f} sqft")
+        rc3.metric("Bedrooms",     f"{pc['avg_bedrooms']:.1f}")
+        rc4.metric("Bathrooms",    f"{pc['avg_bathrooms']:.1f}")
+
+        rc5, rc6, rc7, rc8 = st.columns(4)
+        rc5.metric("Grade (1-13)",    f"{pc['avg_grade']:.1f}")
+        rc6.metric("Condition (1-5)", f"{pc['avg_condition']:.1f}")
+        rc7.metric("Floors",          f"{pc['avg_floors']:.1f}")
+
+    # ── 3 & 5. Market Data + Tax side by side ─────────────────────────────────
+    if "market_data" in metrics or "tax_estimate" in metrics:
+        st.markdown("#### 💰 Market & Tax Data")
+        md_col1, md_col2, md_col3, md_col4 = st.columns(4)
+        if "market_data" in metrics:
+            md = metrics["market_data"]
+            md_col1.metric("Avg $/sqft",    f"${md['avg_price_per_sqft']:.2f}")
+            md_col2.metric("Median $/sqft", f"${md['median_price_per_sqft']:.2f}")
+        if "tax_estimate" in metrics:
+            te = metrics["tax_estimate"]
+            md_col3.metric("Est. Annual Tax", f"${te['avg_annual_tax']:,.0f}")
+            md_col4.metric("Tax Rate",        te["annual_tax_rate"])
+
+    # ── 4. Age Estimate ────────────────────────────────────────────────────────
     if "age_estimate" in metrics:
-        st.markdown("**Property Age**")
+        st.markdown("#### 🗓️ Property Age")
         ae = metrics["age_estimate"]
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Avg Year Built", f"{ae['avg_year_built']:.0f}")
-        with col2:
-            st.metric("Avg Age", f"{ae['avg_age']:.1f} years")
-        with col3:
-            st.metric("Age Range", f"{ae['oldest_year']:.0f} - {ae['newest_year']:.0f}")
-    
-    # 5. Tax Estimate
-    if "tax_estimate" in metrics:
-        st.markdown("**Tax Estimate**")
-        te = metrics["tax_estimate"]
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Avg Annual Tax", f"${te['avg_annual_tax']:,.0f}")
-        with col2:
-            st.metric("Tax Rate", te['annual_tax_rate'])
+        ac1, ac2, ac3, ac4 = st.columns(4)
+        ac1.metric("Avg Year Built", f"{ae['avg_year_built']:.0f}")
+        ac2.metric("Avg Age",        f"{ae['avg_age']:.0f} yrs")
+        ac3.metric("Oldest Built",   f"{ae['oldest_year']:.0f}")
+        ac4.metric("Newest Built",   f"{ae['newest_year']:.0f}")
+
+
+import re as _re
+
+# ── Sensible median defaults for the local prediction form ───────────────────
+_LOCAL_DEFAULTS = {
+    "LotArea": 8000,
+    "OverallQual": 6,
+    "OverallCond": 5,
+    "YearBuilt": 1990,
+    "YearRemodAdd": 2000,
+    "GrLivArea": 1500,
+    "FullBath": 2,
+    "HalfBath": 0,
+    "BedroomAbvGr": 3,
+    "TotRmsAbvGrd": 7,
+    "Fireplaces": 0,
+    "GarageCars": 2,
+    "GarageArea": 400,
+    "NeighborhoodScore": 5.0,
+    "CensusMedianValue": 200000,
+    "MedianIncomeK": 55.0,
+    "OwnerOccupiedRate": 0.65,
+    "SchoolDistrictRating": 6.0,
+    "WalkScore": 50,
+    "HOAFee": 0,
+    "PricePerSqft": 150,
+    "LandValue": 50000,
+}
+
+
+def _render_local_prediction_form(slot_index: int, pipeline, parsed_addr: dict) -> None:
+    """Render a property-feature form and predict using the locally loaded model (no API needed)."""
+    st.markdown("---")
+    st.info(
+        "💡 **API server is offline.** Use the form below to get an instant price estimate "
+        "directly from the locally loaded model — no backend required."
+    )
+    st.subheader("🔮 Local Prediction")
+
+    with st.form(f"local_predict_form_{slot_index}"):
+        st.markdown("**📍 Location** (pre-filled from your address)")
+        lc1, lc2, lc3 = st.columns(3)
+        with lc1:
+            l_city = st.text_input("City", value=parsed_addr.get("city", ""))
+        with lc2:
+            l_state = st.text_input("State (2-letter)", value=parsed_addr.get("state", ""), max_chars=2)
+        with lc3:
+            l_zip = st.text_input("ZIP Code", value=parsed_addr.get("postal", ""), max_chars=5)
+
+        st.markdown("**🏠 Property Details**")
+        pd1, pd2, pd3 = st.columns(3)
+        with pd1:
+            l_proptype = st.selectbox("Property Type", ["single_family", "townhouse", "luxury"])
+        with pd2:
+            l_yr_built = st.number_input("Year Built", min_value=1800, max_value=2026, value=_LOCAL_DEFAULTS["YearBuilt"])
+        with pd3:
+            l_yr_remod = st.number_input("Year Last Remodeled", min_value=1800, max_value=2026, value=_LOCAL_DEFAULTS["YearRemodAdd"])
+
+        qa1, qa2, qa3, qa4 = st.columns(4)
+        with qa1:
+            l_qual = st.slider("Overall Quality (1–10)", 1, 10, _LOCAL_DEFAULTS["OverallQual"])
+        with qa2:
+            l_cond = st.slider("Overall Condition (1–10)", 1, 10, _LOCAL_DEFAULTS["OverallCond"])
+        with qa3:
+            l_gr_liv = st.number_input("Living Area (sqft)", min_value=100, max_value=20000, value=_LOCAL_DEFAULTS["GrLivArea"])
+        with qa4:
+            l_lot = st.number_input("Lot Area (sqft)", min_value=100, max_value=1000000, value=_LOCAL_DEFAULTS["LotArea"])
+
+        rm1, rm2, rm3, rm4 = st.columns(4)
+        with rm1:
+            l_beds = st.number_input("Bedrooms", min_value=0, max_value=20, value=_LOCAL_DEFAULTS["BedroomAbvGr"])
+        with rm2:
+            l_fbath = st.number_input("Full Baths", min_value=0, max_value=10, value=_LOCAL_DEFAULTS["FullBath"])
+        with rm3:
+            l_hbath = st.number_input("Half Baths", min_value=0, max_value=10, value=_LOCAL_DEFAULTS["HalfBath"])
+        with rm4:
+            l_rooms = st.number_input("Total Rooms", min_value=1, max_value=30, value=_LOCAL_DEFAULTS["TotRmsAbvGrd"])
+
+        gr1, gr2, gr3 = st.columns(3)
+        with gr1:
+            l_fire = st.number_input("Fireplaces", min_value=0, max_value=5, value=_LOCAL_DEFAULTS["Fireplaces"])
+        with gr2:
+            l_garage_cars = st.number_input("Garage (# cars)", min_value=0, max_value=5, value=_LOCAL_DEFAULTS["GarageCars"])
+        with gr3:
+            l_garage_area = st.number_input("Garage Area (sqft)", min_value=0, max_value=5000, value=_LOCAL_DEFAULTS["GarageArea"])
+
+        with st.expander("🌍 Neighborhood & Economic Factors (optional — defaults are median values)"):
+            ne1, ne2, ne3 = st.columns(3)
+            with ne1:
+                l_neighborhood = st.slider("Neighborhood Score", 0.0, 10.0, float(_LOCAL_DEFAULTS["NeighborhoodScore"]), 0.1)
+                l_school = st.slider("School District Rating", 0.0, 10.0, float(_LOCAL_DEFAULTS["SchoolDistrictRating"]), 0.1)
+            with ne2:
+                l_income = st.number_input("Median Income ($K)", min_value=0.0, max_value=500.0, value=float(_LOCAL_DEFAULTS["MedianIncomeK"]))
+                l_walkscore = st.slider("Walk Score (0–100)", 0, 100, _LOCAL_DEFAULTS["WalkScore"])
+            with ne3:
+                l_census_val = st.number_input("Census Median Value ($)", min_value=0, max_value=2000000, value=_LOCAL_DEFAULTS["CensusMedianValue"])
+                l_hoa = st.number_input("HOA Fee ($/mo)", min_value=0, max_value=5000, value=_LOCAL_DEFAULTS["HOAFee"])
+            en1, en2 = st.columns(2)
+            with en1:
+                l_owner_rate = st.slider("Owner Occupied Rate", 0.0, 1.0, float(_LOCAL_DEFAULTS["OwnerOccupiedRate"]), 0.01)
+                l_land_val = st.number_input("Land Value ($)", min_value=0, max_value=2000000, value=_LOCAL_DEFAULTS["LandValue"])
+            with en2:
+                l_price_sqft = st.number_input("Price Per Sqft estimate ($)", min_value=0, max_value=5000, value=_LOCAL_DEFAULTS["PricePerSqft"])
+
+        local_submit = st.form_submit_button("🔮 Predict Locally", use_container_width=True)
+
+    local_pred_key = f"local_prediction_{slot_index}"
+    if local_submit:
+        feature_row = {
+            "LotArea": int(l_lot),
+            "OverallQual": int(l_qual),
+            "OverallCond": int(l_cond),
+            "YearBuilt": int(l_yr_built),
+            "YearRemodAdd": int(l_yr_remod),
+            "GrLivArea": int(l_gr_liv),
+            "FullBath": int(l_fbath),
+            "HalfBath": int(l_hbath),
+            "BedroomAbvGr": int(l_beds),
+            "TotRmsAbvGrd": int(l_rooms),
+            "Fireplaces": int(l_fire),
+            "GarageCars": int(l_garage_cars),
+            "GarageArea": int(l_garage_area),
+            "NeighborhoodScore": float(l_neighborhood),
+            "CensusMedianValue": int(l_census_val),
+            "MedianIncomeK": float(l_income),
+            "OwnerOccupiedRate": float(l_owner_rate),
+            "PropertyType": l_proptype,
+            "City": l_city.strip(),
+            "ZipCode": l_zip.strip(),
+            "State": l_state.strip().upper(),
+            "SchoolDistrictRating": float(l_school),
+            "WalkScore": int(l_walkscore),
+            "HOAFee": int(l_hoa),
+            "PricePerSqft": int(l_price_sqft),
+            "LandValue": int(l_land_val),
+        }
+        try:
+            row_df = pd.DataFrame([feature_row])
+            predicted_price = float(pipeline.predict(row_df)[0])
+            st.session_state[local_pred_key] = predicted_price
+        except Exception as exc:
+            st.session_state[local_pred_key] = None
+            st.error(f"❌ Local prediction failed: {exc}")
+
+    local_pred = st.session_state.get(local_pred_key)
+    if local_pred is not None:
+        st.success("### 🏠 Price Estimate Ready")
+        lpr1, lpr2, lpr3 = st.columns(3)
+        lpr1.metric("Predicted Price", f"${local_pred:,.0f}")
+        lpr2.metric("Model", "LightGBM (local)")
+        lpr3.metric("Source", "Offline / No API")
+
+
+def _parse_address_client(full: str) -> dict:
+    """Client-side parser: extract street, city, state, zip from a free-form US address."""
+    s = full.strip()
+
+    # Pattern 1: ..., City, ST 00000  or  ..., City ST 00000
+    m = _re.search(r",?\s*([^,]+?),?\s*\b([A-Z]{2})\s+(\d{5}(?:-\d{4})?)\s*$", s, _re.IGNORECASE)
+    if m:
+        city   = m.group(1).strip().strip(',')
+        state  = m.group(2).upper()
+        zipcode = m.group(3)[:5]
+        street = s[:m.start()].strip().strip(',')
+        return {"line1": street, "city": city, "state": state, "postal": zipcode}
+
+    # Pattern 2: trailing ST 00000 (space-separated)
+    m2 = _re.search(r'\s+([A-Z]{2})\s+(\d{5})\s*$', s, _re.IGNORECASE)
+    if m2:
+        state   = m2.group(1).upper()
+        zipcode = m2.group(2)
+        before  = s[:m2.start()].strip()
+        if ',' in before:
+            parts = [p.strip() for p in before.rsplit(',', 1)]
+            street, city = parts[0], parts[1]
+        else:
+            toks = before.split()
+            city   = toks[-1] if toks else ""
+            street = " ".join(toks[:-1])
+        return {"line1": street, "city": city, "state": state, "postal": zipcode}
+
+    # Pattern 3: City, ST only
+    m3 = _re.search(r",?\s*([^,]+?),?\s*\b([A-Z]{2})\s*$", s, _re.IGNORECASE)
+    if m3:
+        city   = m3.group(1).strip().strip(',')
+        state  = m3.group(2).upper()
+        street = s[:m3.start()].strip().strip(',')
+        return {"line1": street, "city": city, "state": state, "postal": ""}
+
+    # Fallback: pass raw string through unchanged
+    return {"line1": s, "city": "", "state": "", "postal": ""}
 
 
 def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
@@ -421,73 +604,99 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
         st.markdown(f"### {slot_label}")
 
         with st.form(f"address_lookup_form_{slot_index}"):
-            # Row 1: Address Line 1 and Address Line 2
-            col1, col2 = st.columns([1, 1], gap="medium")
-            with col1:
-                st.text_input(
-                    "Address Line 1 *",
-                    placeholder="123 Main Street",
-                    key=lookup_state_key(slot_index, "line1"),
-                )
-            with col2:
-                st.text_input(
-                    "Address Line 2",
-                    placeholder="Apt 456",
-                    key=lookup_state_key(slot_index, "line2"),
-                )
+            # ── Primary: single free-form address field ───────────────────
+            st.text_input(
+                "📍 Full Address",
+                placeholder="e.g.  123 Peachtree St NE, Atlanta, GA 30308   or   500 NW 1st Ave Miami FL 33128",
+                help=(
+                    "Type the complete address in any of these formats:\n"
+                    "- 123 Main St, City, ST 00000\n"
+                    "- 123 Main St, City ST 00000\n"
+                    "- 123 Main St City State ZipCode\n\n"
+                    "Use the fields below only if you need to override individual parts."
+                ),
+                key=lookup_state_key(slot_index, "full_addr"),
+            )
 
-            # Row 2: City and Postal Code
-            col3, col4 = st.columns([1, 1], gap="medium")
-            with col3:
-                st.text_input(
-                    "City *",
-                    placeholder="Miami",
-                    key=lookup_state_key(slot_index, "city"),
-                )
-            with col4:
-                st.text_input(
-                    "Postal Code *",
-                    placeholder="33101",
-                    key=lookup_state_key(slot_index, "postal"),
-                )
-
-            # Row 3: State and Country
-            col5, col6 = st.columns([1, 1], gap="medium")
-            with col5:
-                st.text_input(
-                    "State *",
-                    placeholder="FL",
-                    key=lookup_state_key(slot_index, "state"),
-                )
-            with col6:
-                st.text_input(
-                    "Country",
-                    key=lookup_state_key(slot_index, "country"),
-                    value=st.session_state.get(lookup_state_key(slot_index, "country"), "US"),
-                )
+            # ── Secondary: manual structured override ─────────────────────
+            with st.expander("🔧 Override individual fields (optional)"):
+                col1, col2 = st.columns([2, 1], gap="medium")
+                with col1:
+                    st.text_input(
+                        "Street / Address Line 1",
+                        placeholder="123 Main Street",
+                        key=lookup_state_key(slot_index, "line1"),
+                    )
+                with col2:
+                    st.text_input(
+                        "Unit / Apt",
+                        placeholder="Apt 4B",
+                        key=lookup_state_key(slot_index, "line2"),
+                    )
+                col3, col4, col5, col6 = st.columns([2, 1, 1, 1], gap="small")
+                with col3:
+                    st.text_input(
+                        "City",
+                        placeholder="Atlanta",
+                        key=lookup_state_key(slot_index, "city"),
+                    )
+                with col4:
+                    st.text_input(
+                        "State",
+                        placeholder="GA",
+                        max_chars=2,
+                        key=lookup_state_key(slot_index, "state"),
+                    )
+                with col5:
+                    st.text_input(
+                        "ZIP Code",
+                        placeholder="30308",
+                        max_chars=10,
+                        key=lookup_state_key(slot_index, "postal"),
+                    )
+                with col6:
+                    st.text_input(
+                        "Country",
+                        max_chars=2,
+                        key=lookup_state_key(slot_index, "country"),
+                        value=st.session_state.get(lookup_state_key(slot_index, "country"), "US"),
+                    )
 
             search_submitted = st.form_submit_button("🔍 Search Address", use_container_width=True)
 
         if search_submitted:
-            lookup_line1 = st.session_state.get(lookup_state_key(slot_index, "line1"), "")
-            lookup_city = st.session_state.get(lookup_state_key(slot_index, "city"), "")
-            lookup_state = st.session_state.get(lookup_state_key(slot_index, "state"), "")
-            lookup_line2 = st.session_state.get(lookup_state_key(slot_index, "line2"), "")
-            lookup_postal = st.session_state.get(lookup_state_key(slot_index, "postal"), "")
-            lookup_country = st.session_state.get(lookup_state_key(slot_index, "country"), "US")
+            full_addr_raw  = st.session_state.get(lookup_state_key(slot_index, "full_addr"), "").strip()
+            manual_line1   = st.session_state.get(lookup_state_key(slot_index, "line1"), "").strip()
+            manual_city    = st.session_state.get(lookup_state_key(slot_index, "city"), "").strip()
+            manual_state   = st.session_state.get(lookup_state_key(slot_index, "state"), "").strip().upper()
+            manual_line2   = st.session_state.get(lookup_state_key(slot_index, "line2"), "").strip()
+            manual_postal  = st.session_state.get(lookup_state_key(slot_index, "postal"), "").strip()
+            manual_country = st.session_state.get(lookup_state_key(slot_index, "country"), "US").strip()
 
-            if not lookup_line1.strip() or not lookup_city.strip() or not lookup_state.strip() or not lookup_postal.strip():
-                st.error("❌ Please fill in all required fields (marked with *).")
+            if not full_addr_raw and not manual_line1:
+                st.warning("⚠️ Enter an address above to search.")
             else:
-                lookup_payload = {
-                    "address_line_1": lookup_line1.strip(),
-                    "city": lookup_city.strip(),
-                    "state": lookup_state.strip(),
-                    "postal_code": lookup_postal.strip(),
-                    "country": lookup_country.strip(),
-                }
-                if lookup_line2.strip():
-                    lookup_payload["address_line_2"] = lookup_line2.strip()
+                # If free-form provided, parse it to fill any missing manual fields
+                if full_addr_raw:
+                    parsed = _parse_address_client(full_addr_raw)
+                    line1   = manual_line1   or parsed.get("line1", "")
+                    city    = manual_city    or parsed.get("city", "")
+                    state   = manual_state   or parsed.get("state", "")
+                    postal  = manual_postal  or parsed.get("postal", "")
+                else:
+                    line1, city, state, postal = manual_line1, manual_city, manual_state, manual_postal
+
+                # Build payload — always send full_address for maximum geocoding accuracy
+                address_parts = [p for p in [line1, manual_line2, city, f"{state} {postal}".strip()] if p]
+                canonical_full = full_addr_raw or ", ".join(address_parts)
+
+                lookup_payload = {"full_address": canonical_full, "country": manual_country or "US"}
+                # Also send structured fields when available (backend uses whichever is more complete)
+                if line1:   lookup_payload["address_line_1"] = line1
+                if city:    lookup_payload["city"]           = city
+                if state:   lookup_payload["state"]          = state
+                if postal:  lookup_payload["postal_code"]    = postal
+                if manual_line2: lookup_payload["address_line_2"] = manual_line2
 
                 with st.spinner(f"🌍 Looking up address for {slot_label.lower()}..."):
                     sc, body, _url = call_api("POST", api_base_url, "/v1/properties/normalize", payload=lookup_payload)
@@ -496,15 +705,39 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                     st.session_state[normalized_key] = body
                     st.session_state[prediction_key] = None
                     st.session_state[prediction_error_key] = None
+                    # Clear any stale local-fallback state when API succeeds
+                    st.session_state.pop(f"local_fallback_{slot_index}", None)
+                    st.session_state.pop(f"local_prediction_{slot_index}", None)
                     st.success("✅ Address found!")
                 else:
                     st.session_state[normalized_key] = None
-                    st.error(f"❌ Address lookup failed (Status {sc})")
-                    st.json(body)
+                    # Persist parsed address so the local prediction form stays visible on rerun
+                    st.session_state[f"local_fallback_{slot_index}"] = {
+                        "city": city, "state": state, "postal": postal
+                    }
+                    error_detail = ""
+                    if sc is None:
+                        error_detail = "API server is not reachable — is the backend running?"
+                    elif isinstance(body, dict):
+                        detail = body.get("detail", "")
+                        if isinstance(detail, list):
+                            error_detail = "; ".join(d.get("msg", str(d)) for d in detail)
+                        elif detail:
+                            error_detail = str(detail)
+                    st.error(f"❌ Address lookup failed (HTTP {sc}){': ' + error_detail if error_detail else ''}")
+                    if sc is not None:
+                        with st.expander("Response detail"):
+                            st.json(body)
 
         normalized = st.session_state.get(normalized_key)
         if not normalized:
-            st.info("Enter an address above and click Search Address.")
+            local_fallback = st.session_state.get(f"local_fallback_{slot_index}")
+            if local_fallback and model_artifact is not None:
+                _render_local_prediction_form(slot_index, model_artifact.model, local_fallback)
+            elif local_fallback and model_artifact is None:
+                st.warning("⚠️ No trained model found. Train a model using `scripts/train.py` to enable local predictions.")
+            else:
+                st.info("Enter an address above and click Search Address.")
             return None
 
         col_addr, col_coords = st.columns([2, 1])
@@ -534,22 +767,70 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                 if normalized.get("geocoding_source"):
                     st.caption(f"📡 Source: {normalized['geocoding_source']}")
 
-        # Display market metrics
-        metrics = calculate_market_metrics(df)
-        render_market_metrics(metrics)
+        # Map pin
+        latitude = normalized.get("latitude")
+        longitude = normalized.get("longitude")
+        if latitude is not None and longitude is not None:
+            st.map(
+                pd.DataFrame([{"lat": latitude, "lon": longitude}]),
+                latitude="lat",
+                longitude="lon",
+                zoom=13,
+            )
 
+        # ── Predict Price ─────────────────────────────────────────────────
         st.markdown("---")
-        st.subheader("💰 Predict Price")
-        st.write("Use this address to get an instant price prediction.")
 
-        st.text_input(
-            "Your Email (optional)",
-            placeholder="you@example.com",
-            key=lookup_state_key(slot_index, "requested_by"),
-        )
+        # Show existing prediction result prominently BEFORE market context
+        existing_prediction = st.session_state.get(prediction_key)
+        if existing_prediction:
+            price = existing_prediction.get("predicted_price")
+            if price is not None:
+                st.markdown(
+                    f"""
+                    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                                padding: 28px 32px; border-radius: 14px; margin: 12px 0 20px 0;
+                                text-align: center; box-shadow: 0 8px 30px rgba(102,126,234,0.4);">
+                        <p style="color: rgba(255,255,255,0.85); margin: 0 0 6px 0; font-size: 1rem; font-weight: 500;">
+                            Estimated House Price
+                        </p>
+                        <p style="color: white; margin: 0; font-size: 3rem; font-weight: 800; letter-spacing: 1px;">
+                            ${price:,.0f}
+                        </p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                cs_col, rid_col = st.columns(2)
+                completeness = existing_prediction.get("feature_snapshot", {}).get("completeness_score")
+                if completeness is not None:
+                    cs_col.metric("Data Completeness", f"{completeness:.1%}")
+                request_id = str(existing_prediction.get("request_id", "N/A"))
+                rid_col.metric("Request ID", request_id[:8] + "…" if len(request_id) > 8 else request_id)
 
-        if st.button("🔮 Predict House Price", use_container_width=True, key=lookup_state_key(slot_index, "predict")):
+        prediction_error = st.session_state.get(prediction_error_key)
+        if prediction_error:
+            st.error(prediction_error["message"])
+            detail = prediction_error.get("detail")
+            if detail:
+                st.error(f"Detail: {detail}" if isinstance(detail, str) else "")
+                if not isinstance(detail, str):
+                    st.json(detail)
+
+        st.subheader("🔮 Get Price Prediction")
+        ep_col, btn_col = st.columns([3, 1])
+        with ep_col:
+            st.text_input(
+                "Your Email (optional)",
+                placeholder="you@example.com",
+                key=lookup_state_key(slot_index, "requested_by"),
+                label_visibility="collapsed",
+            )
+
+        if st.button("Predict House Price", use_container_width=True, key=lookup_state_key(slot_index, "predict"), type="primary"):
+            formatted = normalized.get("formatted_address") or normalized.get("address_line_1", "")
             pred_payload = {
+                "full_address": formatted,
                 "address_line_1": normalized.get("address_line_1"),
                 "city": normalized.get("city"),
                 "state": normalized.get("state"),
@@ -575,14 +856,19 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                 st.session_state[prediction_key] = pred_body
                 st.session_state[prediction_error_key] = None
                 st.session_state["last_prediction_id"] = str(pred_body.get("prediction_id", ""))
+                st.rerun()
             else:
                 st.session_state[prediction_key] = None
                 st.session_state[prediction_error_key] = {
                     "message": f"❌ Prediction failed (Status {pred_sc})",
                     "detail": pred_body.get("detail") if isinstance(pred_body, dict) else pred_body,
                 }
+                st.rerun()
 
-        render_prediction_result(slot_index)
+        # ── Market context (shown below the prediction) ────────────────────
+        with st.expander("📊 Dataset Market Context", expanded=False):
+            metrics = calculate_market_metrics(df)
+            render_market_metrics(metrics)
         return normalized
 
 # Sidebar
@@ -677,20 +963,14 @@ if page == "Overview":
     
     st.markdown("---")
     
-    # Key metrics
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("Total Properties", len(df), delta=None)
-    
-    with col2:
-        st.metric("Avg Price", f"${df['price'].mean():,.0f}", delta=None)
-    
-    with col3:
-        st.metric("Price Range", f"${df['price'].min():,.0f} - ${df['price'].max():,.0f}", delta=None)
-    
-    with col4:
-        st.metric("Avg Bedrooms", f"{df['bedrooms'].mean():.1f}", delta=None)
+    # Key metrics — 5 cards so each price value has room to breathe
+    col1, col2, col3, col4, col5 = st.columns(5)
+
+    col1.metric("Total Properties", f"{len(df):,}")
+    col2.metric("Avg Price",        f"${df['price'].mean():,.0f}")
+    col3.metric("Min Price",        f"${df['price'].min():,.0f}")
+    col4.metric("Max Price",        f"${df['price'].max():,.0f}")
+    col5.metric("Avg Bedrooms",     f"{df['bedrooms'].mean():.1f}")
     
     st.markdown("---")
     
@@ -985,299 +1265,14 @@ elif page == "Address Lookup":
         "Search for multiple property addresses side by side, compare their normalized "
         "results, and run instant price predictions."
     )
-
     st.caption("Each panel keeps its own search result and prediction so you can compare addresses side by side.")
     st.markdown("---")
 
-    slot_count = 2
-
-    # Initialize session state for lookup
-    if "lookup_predictions" not in st.session_state:
-        st.session_state["lookup_predictions"] = []
-    if "lookup_normalized" not in st.session_state:
-        st.session_state["lookup_normalized"] = None
-    
-    # Initialize address slots (up to 2 side-by-side)
-    num_slots = 2
-    
-    st.subheader("📍 Enter Property Addresses (Side-by-Side)")
-    st.write("Fill in one or more addresses and search them individually")
-    
-    # Create columns for address forms
-    form_cols = st.columns(num_slots)
-    
-    # Process each address slot
-    for slot_idx in range(num_slots):
-        with form_cols[slot_idx]:
-            st.markdown(f"### Property {slot_idx + 1}")
-            
-            # Use unique keys for each form
-            line1_key = f"lookup_line1_{slot_idx}"
-            city_key = f"lookup_city_{slot_idx}"
-            state_key = f"lookup_state_{slot_idx}"
-            line2_key = f"lookup_line2_{slot_idx}"
-            postal_key = f"lookup_postal_{slot_idx}"
-            country_key = f"lookup_country_{slot_idx}"
-            
-            # Input fields
-            line1 = st.text_input(
-                f"Address Line 1 *",
-                placeholder="123 Main Street",
-                value=st.session_state.get(line1_key, ""),
-                key=f"input_{line1_key}"
-            )
-            
-            city = st.text_input(
-                f"City *",
-                placeholder="Miami",
-                value=st.session_state.get(city_key, ""),
-                key=f"input_{city_key}"
-            )
-            
-            state = st.text_input(
-                f"State *",
-                placeholder="FL",
-                value=st.session_state.get(state_key, ""),
-                key=f"input_{state_key}"
-            )
-            
-            line2 = st.text_input(
-                f"Address Line 2",
-                placeholder="Apt 456",
-                value=st.session_state.get(line2_key, ""),
-                key=f"input_{line2_key}"
-            )
-            
-            postal = st.text_input(
-                f"Postal Code *",
-                placeholder="33101",
-                value=st.session_state.get(postal_key, ""),
-                key=f"input_{postal_key}"
-            )
-            
-            country = st.text_input(
-                f"Country",
-                value=st.session_state.get(country_key, "US"),
-                key=f"input_{country_key}"
-            )
-            
-            # Search button for this slot
-            if st.button(f"🔍 Search Property {slot_idx + 1}", use_container_width=True, key=f"search_btn_{slot_idx}"):
-                # Save inputs
-                st.session_state[line1_key] = line1
-                st.session_state[city_key] = city
-                st.session_state[state_key] = state
-                st.session_state[line2_key] = line2
-                st.session_state[postal_key] = postal
-                st.session_state[country_key] = country
-                
-                # Validate
-                if not line1.strip() or not city.strip() or not state.strip() or not postal.strip():
-                    st.error("❌ Fill all required fields (*)")
-                else:
-                    # Build payload
-                    lookup_payload = {
-                        "address_line_1": line1.strip(),
-                        "city": city.strip(),
-                        "state": state.strip(),
-                        "postal_code": postal.strip(),
-                        "country": country.strip(),
-                    }
-                    if line2.strip():
-                        lookup_payload["address_line_2"] = line2.strip()
-                    
-                    with st.spinner("🌍 Looking up address..."):
-                        sc, body, url = call_api("POST", api_base_url, "/v1/properties/normalize", payload=lookup_payload)
-                    
-                    if sc == 200 and isinstance(body, dict):
-                        # Store geocode result for this slot
-                        st.session_state[f"geocode_{slot_idx}"] = body
-                        # Store in predictions with auto-prediction
-                        pred_payload = dict(lookup_payload)
-                        with st.spinner("🧠 Predicting price..."):
-                            pred_sc, pred_body, _ = call_api("POST", api_base_url, "/v1/predictions", payload=pred_payload)
-                        
-                        if pred_sc == 201 and isinstance(pred_body, dict):
-                            prediction_entry = {
-                                "address": f"{line1}, {city}, {state}",
-                                "formatted_address": body.get('formatted_address', ''),
-                                "latitude": body.get('latitude'),
-                                "longitude": body.get('longitude'),
-                                "predicted_price": pred_body.get('predicted_price'),
-                                "completeness_score": pred_body.get('completeness_score'),
-                                "features": pred_body.get('feature_snapshot', {}).get('features', {}),
-                                "prediction_id": pred_body.get('prediction_id'),
-                            }
-                            st.session_state["lookup_predictions"].append(prediction_entry)
-                            st.session_state[f"prediction_{slot_idx}"] = pred_body
-                            st.success(f"✅ Property {slot_idx + 1} found!")
-                        else:
-                            st.session_state.pop(f"prediction_{slot_idx}", None)
-                            st.error(f"❌ Prediction failed")
-                    else:
-                        st.session_state.pop(f"geocode_{slot_idx}", None)
-                        st.error(f"❌ Address lookup failed")
-
-            # Show geocoded result and prediction for this slot
-            geocode = st.session_state.get(f"geocode_{slot_idx}")
-            prediction = st.session_state.get(f"prediction_{slot_idx}")
-            if geocode:
-                st.markdown("---")
-                st.markdown("**📍 Geocoded Location**")
-                st.caption(geocode.get("formatted_address", ""))
-                lat = geocode.get("latitude")
-                lon = geocode.get("longitude")
-                if lat and lon:
-                    st.caption(f"🌐 Lat: `{lat:.5f}`, Lon: `{lon:.5f}`")
-                    slot_map_df = pd.DataFrame([{"lat": lat, "lon": lon}])
-                    st.map(slot_map_df, latitude="lat", longitude="lon", zoom=13, size=50)
-            if prediction:
-                price = prediction.get("predicted_price")
-                completeness = prediction.get("feature_snapshot", {}).get("completeness_score")
-                features = prediction.get("feature_snapshot", {}).get("features", {})
-                if price is not None:
-                    st.markdown("**🏠 Price Prediction**")
-                    st.metric("Predicted Price", f"${price:,.0f}")
-                if completeness is not None:
-                    st.metric("Data Completeness", f"{completeness:.1%}")
-                if features:
-                    st.markdown("**Key Features:**")
-                    feat_cols = st.columns(2)
-                    for i, (k, v) in enumerate(list(features.items())[:4]):
-                        with feat_cols[i % 2]:
-                            st.metric(k, round(v, 2) if isinstance(v, float) else v)
-    
-    st.markdown("---")
-    
-    # Display results
-    normalized = st.session_state.get("lookup_normalized")
-    
-    st.markdown("---")
-    
-    # ========== COMPARISON SECTION ==========
-    predictions = st.session_state.get("lookup_predictions", [])
-    
-    if predictions:
-        st.subheader(f"📊 Comparison ({len(predictions)} properties)")
-        
-        # Comparison table
-        comparison_data = []
-        for idx, pred in enumerate(predictions):
-            comparison_data.append({
-                "Property": pred.get("address", "Unknown"),
-                "Predicted Price": f"${pred.get('predicted_price', 0):,.0f}",
-                "Completeness": f"{pred.get('completeness_score', 0):.1%}",
-            })
-        
-        comparison_df = pd.DataFrame(comparison_data)
-        st.dataframe(comparison_df, use_container_width=True)
-        
-        # Price comparison chart
-        if len(predictions) > 1:
-            st.markdown("###")
-            st.subheader("💵 Price Comparison Chart")
-            
-            chart_data = pd.DataFrame([
-                {
-                    "Address": p.get("address", "Unknown").split(",")[0],  # Just street
-                    "Price": p.get("predicted_price", 0)
-                }
-                for p in predictions
-            ])
-            
-            fig = px.batestsr(
-                chart_data,
-                x="Address",
-                y="Price",
-                title="Predicted Prices Comparison",
-                labels={"Price": "Price ($)", "Address": "Property"},
-                color="Price",
-                color_continuous_scale="Viridis"
-            )
-            fig.update_layout(height=400)
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Statistics
-            col1, col2, col3, col4 = st.columns(4)
-            prices = [p.get("predicted_price", 0) for p in predictions]
-            
-            with col1:
-                st.metric("Highest Price", f"${max(prices):,.0f}")
-            with col2:
-                st.metric("Lowest Price", f"${min(prices):,.0f}")
-            with col3:
-                st.metric("Average Price", f"${sum(prices)/len(prices):,.0f}")
-            with col4:
-                st.metric("Price Range", f"${max(prices) - min(prices):,.0f}")
-        
-        # Map with all properties
-        if any(p.get('latitude') and p.get('longitude') for p in predictions):
-            st.markdown("###")
-            st.subheader("🗺️ All Properties Map")
-            
-            try:
-                import folium
-                from streamlit_folium import st_folium
-                
-                # Calculate center of all properties
-                lats = [p['latitude'] for p in predictions if p.get('latitude')]
-                lons = [p['longitude'] for p in predictions if p.get('longitude')]
-                
-                if lats and lons:
-                    center_lat = sum(lats) / len(lats)
-                    center_lon = sum(lons) / len(lons)
-                    
-                    m = folium.Map(
-                        location=[center_lat, center_lon],
-                        zoom_start=12,
-                        tiles="OpenStreetMap"
-                    )
-                    
-                    # Color map for markers
-                    colors = ["red", "blue", "green", "purple", "orange", "darkred", "darkblue", "darkgreen"]
-                    
-                    # Add markers for each property
-                    for idx, pred in enumerate(predictions):
-                        if pred.get('latitude') and pred.get('longitude'):
-                            color = colors[idx % len(colors)]
-                            price = pred.get('predicted_price', 0)
-                            
-                            folium.Marker(
-                                location=[pred['latitude'], pred['longitude']],
-                                popup=f"{pred.get('address', 'Unknown')}<br>${price:,.0f}",
-                                tooltip=f"${price:,.0f}",
-                                icon=folium.Icon(color=color, icon="home", prefix="fa")
-                            ).add_to(m)
-                    
-                    st_folium(m, width=700, height=500)
-            except Exception as e:
-                st.warning(f"⚠️ Could not display map: {str(e)}")
-        
-        # Remove individual predictions
-        st.markdown("###")
-        st.subheader("🗑️ Manage Comparison")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if st.button("🔄 Clear All", use_container_width=True):
-                st.session_state["lookup_predictions"] = []
-                st.rerun()
-        
-        with col2:
-            selected_to_remove = st.selectbox(
-                "Remove a property:",
-                options=[f"{i+1}. {p['address'].split(',')[0]}" for i, p in enumerate(predictions)],
-                key="remove_select"
-            )
-            if st.button("❌ Remove Selected", use_container_width=True):
-                remove_idx = int(selected_to_remove.split(".")[0]) - 1
-                predictions.pop(remove_idx)
-                st.session_state["lookup_predictions"] = predictions
-                st.rerun()
-    else:
-        if st.session_state.get("lookup_normalized"):
-            st.info("💡 Predict an address price using the button above to start comparing properties!")
+    lookup_cols = st.columns(2)
+    with lookup_cols[0]:
+        render_lookup_slot(0, api_base_url)
+    with lookup_cols[1]:
+        render_lookup_slot(1, api_base_url)
 
 
 # ==================== PAGE: LIVE API TESTER ====================
