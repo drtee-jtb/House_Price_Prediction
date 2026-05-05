@@ -297,21 +297,8 @@ def render_prediction_result(slot_index: int) -> None:
     if prediction:
         st.success("✅ Prediction Complete!")
 
-        res_col1, res_col2, res_col3 = st.columns(3)
-
-        with res_col1:
-            price = prediction.get("predicted_price")
-            if price is not None:
-                st.metric("Predicted Price", f"${price:,.0f}")
-
-        with res_col2:
-            completeness = prediction.get("feature_snapshot", {}).get("completeness_score")
-            if completeness is not None:
-                st.metric("Data Completeness", f"{completeness:.1%}")
-
-        with res_col3:
-            request_id = str(prediction.get("request_id", "N/A"))
-            st.metric("Request ID", request_id[:8] + "..." if len(request_id) > 8 else request_id)
+        if prediction.get("predicted_price") is not None:
+            st.metric("Predicted Price", f"${prediction['predicted_price']:,.0f}")
 
         key_features = prediction.get("feature_snapshot", {}).get("features", {})
         if key_features:
@@ -397,30 +384,26 @@ def render_market_metrics(metrics: dict) -> None:
 
 import re as _re
 
-# ── Sensible median defaults for the local prediction form ───────────────────
+# ── Median King County defaults for the local prediction form ────────────────
 _LOCAL_DEFAULTS = {
-    "LotArea": 8000,
-    "OverallQual": 6,
-    "OverallCond": 5,
-    "YearBuilt": 1990,
-    "YearRemodAdd": 2000,
-    "GrLivArea": 1500,
-    "FullBath": 2,
-    "HalfBath": 0,
-    "BedroomAbvGr": 3,
-    "TotRmsAbvGrd": 7,
-    "Fireplaces": 0,
-    "GarageCars": 2,
-    "GarageArea": 400,
-    "NeighborhoodScore": 5.0,
-    "CensusMedianValue": 200000,
-    "MedianIncomeK": 55.0,
-    "OwnerOccupiedRate": 0.65,
-    "SchoolDistrictRating": 6.0,
-    "WalkScore": 50,
-    "HOAFee": 0,
-    "PricePerSqft": 150,
-    "LandValue": 50000,
+    "bedrooms": 3,
+    "bathrooms": 2.25,
+    "sqft_living": 2079,
+    "sqft_lot": 7618,
+    "floors": 1.5,
+    "waterfront": 0,
+    "view": 0,
+    "condition": 3,
+    "grade": 7,
+    "sqft_above": 1788,
+    "sqft_basement": 291,
+    "yr_built": 1971,
+    "yr_renovated": 0,
+    "zipcode": 98070,
+    "lat": 47.5605,
+    "long": -122.2139,
+    "sqft_living15": 1987,
+    "sqft_lot15": 7620,
 }
 
 
@@ -444,91 +427,74 @@ def _render_local_prediction_form(slot_index: int, pipeline, parsed_addr: dict) 
             l_zip = st.text_input("ZIP Code", value=parsed_addr.get("postal", ""), max_chars=5)
 
         st.markdown("**🏠 Property Details**")
-        pd1, pd2, pd3 = st.columns(3)
+        pd1, pd2, pd3, pd4 = st.columns(4)
         with pd1:
-            l_proptype = st.selectbox("Property Type", ["single_family", "townhouse", "luxury"])
+            l_beds = st.number_input("Bedrooms", min_value=0, max_value=20, value=_LOCAL_DEFAULTS["bedrooms"])
         with pd2:
-            l_yr_built = st.number_input("Year Built", min_value=1800, max_value=2026, value=_LOCAL_DEFAULTS["YearBuilt"])
+            l_baths = st.number_input("Bathrooms", min_value=0.0, max_value=10.0, value=_LOCAL_DEFAULTS["bathrooms"], step=0.25)
         with pd3:
-            l_yr_remod = st.number_input("Year Last Remodeled", min_value=1800, max_value=2026, value=_LOCAL_DEFAULTS["YearRemodAdd"])
+            l_sqft = st.number_input("Living Area (sqft)", min_value=100, max_value=30000, value=_LOCAL_DEFAULTS["sqft_living"])
+        with pd4:
+            l_lot = st.number_input("Lot Area (sqft)", min_value=100, max_value=2000000, value=_LOCAL_DEFAULTS["sqft_lot"])
 
         qa1, qa2, qa3, qa4 = st.columns(4)
         with qa1:
-            l_qual = st.slider("Overall Quality (1–10)", 1, 10, _LOCAL_DEFAULTS["OverallQual"])
+            l_grade = st.slider("Grade (1–13)", 1, 13, _LOCAL_DEFAULTS["grade"])
         with qa2:
-            l_cond = st.slider("Overall Condition (1–10)", 1, 10, _LOCAL_DEFAULTS["OverallCond"])
+            l_cond = st.slider("Condition", 1, 5, _LOCAL_DEFAULTS["condition"])
         with qa3:
-            l_gr_liv = st.number_input("Living Area (sqft)", min_value=100, max_value=20000, value=_LOCAL_DEFAULTS["GrLivArea"])
+            l_yr_built = st.number_input("Year Built", min_value=1800, max_value=2026, value=_LOCAL_DEFAULTS["yr_built"])
         with qa4:
-            l_lot = st.number_input("Lot Area (sqft)", min_value=100, max_value=1000000, value=_LOCAL_DEFAULTS["LotArea"])
+            l_floors = st.number_input("Floors", min_value=1.0, max_value=4.0, value=_LOCAL_DEFAULTS["floors"], step=0.5)
 
-        rm1, rm2, rm3, rm4 = st.columns(4)
-        with rm1:
-            l_beds = st.number_input("Bedrooms", min_value=0, max_value=20, value=_LOCAL_DEFAULTS["BedroomAbvGr"])
-        with rm2:
-            l_fbath = st.number_input("Full Baths", min_value=0, max_value=10, value=_LOCAL_DEFAULTS["FullBath"])
-        with rm3:
-            l_hbath = st.number_input("Half Baths", min_value=0, max_value=10, value=_LOCAL_DEFAULTS["HalfBath"])
-        with rm4:
-            l_rooms = st.number_input("Total Rooms", min_value=1, max_value=30, value=_LOCAL_DEFAULTS["TotRmsAbvGrd"])
-
-        gr1, gr2, gr3 = st.columns(3)
+        gr1, gr2, gr3, gr4 = st.columns(4)
         with gr1:
-            l_fire = st.number_input("Fireplaces", min_value=0, max_value=5, value=_LOCAL_DEFAULTS["Fireplaces"])
+            l_sqft_above = st.number_input("Above-ground sqft", min_value=0, max_value=30000, value=_LOCAL_DEFAULTS["sqft_above"])
         with gr2:
-            l_garage_cars = st.number_input("Garage (# cars)", min_value=0, max_value=5, value=_LOCAL_DEFAULTS["GarageCars"])
+            l_sqft_bsmt = st.number_input("Basement sqft", min_value=0, max_value=10000, value=_LOCAL_DEFAULTS["sqft_basement"])
         with gr3:
-            l_garage_area = st.number_input("Garage Area (sqft)", min_value=0, max_value=5000, value=_LOCAL_DEFAULTS["GarageArea"])
+            l_yr_reno = st.number_input("Year Renovated (0=never)", min_value=0, max_value=2026, value=_LOCAL_DEFAULTS["yr_renovated"])
+        with gr4:
+            l_waterfront = st.selectbox("Waterfront", [0, 1], format_func=lambda x: "Yes" if x else "No")
 
-        with st.expander("🌍 Neighborhood & Economic Factors (optional — defaults are median values)"):
-            ne1, ne2, ne3 = st.columns(3)
-            with ne1:
-                l_neighborhood = st.slider("Neighborhood Score", 0.0, 10.0, float(_LOCAL_DEFAULTS["NeighborhoodScore"]), 0.1)
-                l_school = st.slider("School District Rating", 0.0, 10.0, float(_LOCAL_DEFAULTS["SchoolDistrictRating"]), 0.1)
-            with ne2:
-                l_income = st.number_input("Median Income ($K)", min_value=0.0, max_value=500.0, value=float(_LOCAL_DEFAULTS["MedianIncomeK"]))
-                l_walkscore = st.slider("Walk Score (0–100)", 0, 100, _LOCAL_DEFAULTS["WalkScore"])
-            with ne3:
-                l_census_val = st.number_input("Census Median Value ($)", min_value=0, max_value=2000000, value=_LOCAL_DEFAULTS["CensusMedianValue"])
-                l_hoa = st.number_input("HOA Fee ($/mo)", min_value=0, max_value=5000, value=_LOCAL_DEFAULTS["HOAFee"])
-            en1, en2 = st.columns(2)
-            with en1:
-                l_owner_rate = st.slider("Owner Occupied Rate", 0.0, 1.0, float(_LOCAL_DEFAULTS["OwnerOccupiedRate"]), 0.01)
-                l_land_val = st.number_input("Land Value ($)", min_value=0, max_value=2000000, value=_LOCAL_DEFAULTS["LandValue"])
-            with en2:
-                l_price_sqft = st.number_input("Price Per Sqft estimate ($)", min_value=0, max_value=5000, value=_LOCAL_DEFAULTS["PricePerSqft"])
+        with st.expander("🌍 Comparable Nearby Properties (optional)"):
+            nb1, nb2 = st.columns(2)
+            with nb1:
+                l_sqft15 = st.number_input("Avg nearby living sqft", min_value=100, max_value=30000, value=_LOCAL_DEFAULTS["sqft_living15"])
+            with nb2:
+                l_lot15 = st.number_input("Avg nearby lot sqft", min_value=100, max_value=2000000, value=_LOCAL_DEFAULTS["sqft_lot15"])
 
         local_submit = st.form_submit_button("🔮 Predict Locally", use_container_width=True)
 
     local_pred_key = f"local_prediction_{slot_index}"
     if local_submit:
+        # Build zipcode from input; fall back to WA median
+        try:
+            l_zipcode = int(l_zip.strip()) if l_zip.strip().isdigit() else _LOCAL_DEFAULTS["zipcode"]
+        except (ValueError, AttributeError):
+            l_zipcode = _LOCAL_DEFAULTS["zipcode"]
+
         feature_row = {
-            "LotArea": int(l_lot),
-            "OverallQual": int(l_qual),
-            "OverallCond": int(l_cond),
-            "YearBuilt": int(l_yr_built),
-            "YearRemodAdd": int(l_yr_remod),
-            "GrLivArea": int(l_gr_liv),
-            "FullBath": int(l_fbath),
-            "HalfBath": int(l_hbath),
-            "BedroomAbvGr": int(l_beds),
-            "TotRmsAbvGrd": int(l_rooms),
-            "Fireplaces": int(l_fire),
-            "GarageCars": int(l_garage_cars),
-            "GarageArea": int(l_garage_area),
-            "NeighborhoodScore": float(l_neighborhood),
-            "CensusMedianValue": int(l_census_val),
-            "MedianIncomeK": float(l_income),
-            "OwnerOccupiedRate": float(l_owner_rate),
-            "PropertyType": l_proptype,
-            "City": l_city.strip(),
-            "ZipCode": l_zip.strip(),
-            "State": l_state.strip().upper(),
-            "SchoolDistrictRating": float(l_school),
-            "WalkScore": int(l_walkscore),
-            "HOAFee": int(l_hoa),
-            "PricePerSqft": int(l_price_sqft),
-            "LandValue": int(l_land_val),
+            "id": 0,
+            "date": 0,
+            "bedrooms": int(l_beds),
+            "bathrooms": float(l_baths),
+            "sqft_living": int(l_sqft),
+            "sqft_lot": int(l_lot),
+            "floors": float(l_floors),
+            "waterfront": int(l_waterfront),
+            "view": 0,
+            "condition": int(l_cond),
+            "grade": int(l_grade),
+            "sqft_above": int(l_sqft_above),
+            "sqft_basement": int(l_sqft_bsmt),
+            "yr_built": int(l_yr_built),
+            "yr_renovated": int(l_yr_reno),
+            "zipcode": l_zipcode,
+            "lat": _LOCAL_DEFAULTS["lat"],
+            "long": _LOCAL_DEFAULTS["long"],
+            "sqft_living15": int(l_sqft15),
+            "sqft_lot15": int(l_lot15),
         }
         try:
             row_df = pd.DataFrame([feature_row])
@@ -662,7 +628,23 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                         value=st.session_state.get(lookup_state_key(slot_index, "country"), "US"),
                     )
 
-            search_submitted = st.form_submit_button("🔍 Search Address", use_container_width=True)
+            # ── Property details ──────────────────────────────────────────
+            with st.expander("🏠 Property Details (fill in for accurate prediction)", expanded=True):
+                pc1, pc2, pc3, pc4 = st.columns(4)
+                with pc1:
+                    st.number_input("Bedrooms", min_value=0, max_value=20, value=3,
+                                    key=lookup_state_key(slot_index, "p_bedrooms"))
+                with pc2:
+                    st.number_input("Bathrooms", min_value=0.0, max_value=10.0, value=2.25, step=0.25,
+                                    key=lookup_state_key(slot_index, "p_bathrooms"))
+                with pc3:
+                    st.number_input("Living Area (sqft)", min_value=100, max_value=30000, value=2079,
+                                    key=lookup_state_key(slot_index, "p_sqft_living"))
+                with pc4:
+                    st.number_input("Lot Area (sqft)", min_value=100, max_value=2000000, value=7618,
+                                    key=lookup_state_key(slot_index, "p_sqft_lot"))
+
+            search_submitted = st.form_submit_button("🔍 Search & Predict Price", use_container_width=True)
 
         if search_submitted:
             full_addr_raw  = st.session_state.get(lookup_state_key(slot_index, "full_addr"), "").strip()
@@ -709,6 +691,36 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                     st.session_state.pop(f"local_fallback_{slot_index}", None)
                     st.session_state.pop(f"local_prediction_{slot_index}", None)
                     st.success("✅ Address found!")
+                    # Auto-trigger prediction immediately
+                    formatted = body.get("formatted_address") or body.get("address_line_1", "")
+                    pred_payload = {
+                        "full_address": formatted,
+                        "address_line_1": body.get("address_line_1"),
+                        "city": body.get("city"),
+                        "state": body.get("state"),
+                        "postal_code": body.get("postal_code"),
+                        "country": body.get("country"),
+                        "bedrooms":    st.session_state.get(lookup_state_key(slot_index, "p_bedrooms")),
+                        "bathrooms":   st.session_state.get(lookup_state_key(slot_index, "p_bathrooms")),
+                        "sqft_living": st.session_state.get(lookup_state_key(slot_index, "p_sqft_living")),
+                        "sqft_lot":    st.session_state.get(lookup_state_key(slot_index, "p_sqft_lot")),
+                    }
+                    if body.get("address_line_2"):
+                        pred_payload["address_line_2"] = body.get("address_line_2")
+                    with st.spinner(f"🧠 Predicting price for {slot_label.lower()}..."):
+                        pred_sc, pred_body, _pred_url = call_api(
+                            "POST", api_base_url, "/v1/predictions", payload=pred_payload
+                        )
+                    if pred_sc == 201 and isinstance(pred_body, dict):
+                        st.session_state[prediction_key] = pred_body
+                        st.session_state[prediction_error_key] = None
+                        st.session_state["last_prediction_id"] = str(pred_body.get("prediction_id", ""))
+                    else:
+                        st.session_state[prediction_key] = None
+                        st.session_state[prediction_error_key] = {
+                            "message": f"❌ Prediction failed (Status {pred_sc})",
+                            "detail": pred_body.get("detail") if isinstance(pred_body, dict) else pred_body,
+                        }
                 else:
                     st.session_state[normalized_key] = None
                     # Persist parsed address so the local prediction form stays visible on rerun
@@ -801,13 +813,6 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                     """,
                     unsafe_allow_html=True,
                 )
-                cs_col, rid_col = st.columns(2)
-                completeness = existing_prediction.get("feature_snapshot", {}).get("completeness_score")
-                if completeness is not None:
-                    cs_col.metric("Data Completeness", f"{completeness:.1%}")
-                request_id = str(existing_prediction.get("request_id", "N/A"))
-                rid_col.metric("Request ID", request_id[:8] + "…" if len(request_id) > 8 else request_id)
-
         prediction_error = st.session_state.get(prediction_error_key)
         if prediction_error:
             st.error(prediction_error["message"])
@@ -817,53 +822,7 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                 if not isinstance(detail, str):
                     st.json(detail)
 
-        st.subheader("🔮 Get Price Prediction")
-        ep_col, btn_col = st.columns([3, 1])
-        with ep_col:
-            st.text_input(
-                "Your Email (optional)",
-                placeholder="you@example.com",
-                key=lookup_state_key(slot_index, "requested_by"),
-                label_visibility="collapsed",
-            )
 
-        if st.button("Predict House Price", use_container_width=True, key=lookup_state_key(slot_index, "predict"), type="primary"):
-            formatted = normalized.get("formatted_address") or normalized.get("address_line_1", "")
-            pred_payload = {
-                "full_address": formatted,
-                "address_line_1": normalized.get("address_line_1"),
-                "city": normalized.get("city"),
-                "state": normalized.get("state"),
-                "postal_code": normalized.get("postal_code"),
-                "country": normalized.get("country"),
-            }
-            if normalized.get("address_line_2"):
-                pred_payload["address_line_2"] = normalized.get("address_line_2")
-
-            requested_by = st.session_state.get(lookup_state_key(slot_index, "requested_by"), "")
-            if requested_by.strip():
-                pred_payload["requested_by"] = requested_by.strip()
-
-            with st.spinner(f"🧠 Analyzing property for {slot_label.lower()}..."):
-                pred_sc, pred_body, _pred_url = call_api(
-                    "POST",
-                    api_base_url,
-                    "/v1/predictions",
-                    payload=pred_payload,
-                )
-
-            if pred_sc == 201 and isinstance(pred_body, dict):
-                st.session_state[prediction_key] = pred_body
-                st.session_state[prediction_error_key] = None
-                st.session_state["last_prediction_id"] = str(pred_body.get("prediction_id", ""))
-                st.rerun()
-            else:
-                st.session_state[prediction_key] = None
-                st.session_state[prediction_error_key] = {
-                    "message": f"❌ Prediction failed (Status {pred_sc})",
-                    "detail": pred_body.get("detail") if isinstance(pred_body, dict) else pred_body,
-                }
-                st.rerun()
 
         # ── Market context (shown below the prediction) ────────────────────
         with st.expander("📊 Dataset Market Context", expanded=False):
@@ -934,7 +893,7 @@ if runtime_health is not None:
 # Page selection
 page = st.sidebar.radio(
     "Select a page:",
-    ["Overview", "Data Analysis", "Feature Exploration", "Statistics", "Address Lookup", "Live API Tester"]
+    ["Overview", "Address Lookup"]
 )
 
 # ==================== PAGE: OVERVIEW ====================
@@ -1017,247 +976,6 @@ if page == "Overview":
     )
     st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
-# ==================== PAGE: DATA ANALYSIS ====================
-elif page == "Data Analysis":
-    st.title("📈 Data Analysis")
-    
-    st.markdown("---")
-    
-    # Filters
-    st.subheader("🔍 Filters")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        min_price = st.slider(
-            "Min Price ($)",
-            int(df['price'].min()),
-            int(df['price'].max()),
-            int(df['price'].min()),
-            step=10000
-        )
-    
-    with col2:
-        max_price = st.slider(
-            "Max Price ($)",
-            int(df['price'].min()),
-            int(df['price'].max()),
-            int(df['price'].max()),
-            step=10000
-        )
-    
-    with col3:
-        bedrooms = st.multiselect(
-            "Bedrooms",
-            sorted(df['bedrooms'].unique()),
-            default=sorted(df['bedrooms'].unique())
-        )
-    
-    # Apply filters
-    filtered_df = df[
-        (df['price'] >= min_price) & 
-        (df['price'] <= max_price) &
-        (df['bedrooms'].isin(bedrooms))
-    ]
-    
-    st.markdown(f"**Showing {len(filtered_df)} properties** (out of {len(df)})")
-    
-    st.markdown("---")
-    
-    # Correlation Analysis
-    st.subheader("🔗 Correlation with Price")
-    
-    # Select only numeric columns for correlation
-    numeric_df = df.select_dtypes(include=[np.number])
-    correlation = numeric_df.corr()['price'].sort_values(ascending=False)
-    correlation_df = correlation.reset_index()
-    correlation_df.columns = ['feature', 'correlation']
-    
-    fig = px.bar(
-        correlation_df,
-        x='correlation',
-        y='feature',
-        orientation='h',
-        title='Feature Correlation with Price',
-        labels={'x': 'Correlation Coefficient'},
-        color='correlation',
-        color_continuous_scale='RdBu'
-    )
-    fig.update_layout(height=500)
-    st.plotly_chart(fig, use_container_width=True)
-    
-    st.markdown("---")
-    
-    # Scatter plots
-    st.subheader("📍 Price vs Features")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        fig = px.scatter(
-            filtered_df,
-            x='sqft_living',
-            y='price',
-            title='Price vs Living Area',
-            trendline='ols',
-            labels={'sqft_living': 'Sq Ft Living', 'price': 'Price ($)'},
-            color='price',
-            color_continuous_scale='Viridis'
-        )
-        fig.update_layout(height=450)
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        fig = px.scatter(
-            filtered_df,
-            x='grade',
-            y='price',
-            title='Price vs Grade',
-            trendline='ols',
-            labels={'grade': 'Grade', 'price': 'Price ($)'},
-            color='price',
-            color_continuous_scale='Viridis'
-        )
-        fig.update_layout(height=450)
-        st.plotly_chart(fig, use_container_width=True)
-
-# ==================== PAGE: FEATURE EXPLORATION ====================
-elif page == "Feature Exploration":
-    st.title("🔬 Feature Exploration")
-    
-    st.markdown("---")
-    
-    # Feature selector
-    st.subheader("Select a Feature to Explore")
-    
-    features = [col for col in df.columns if col not in ['id', 'date', 'lat', 'long']]
-    selected_feature = st.selectbox("Choose a feature:", features)
-    
-    st.markdown("---")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Distribution
-        fig = px.histogram(
-            df,
-            x=selected_feature,
-            title=f'Distribution of {selected_feature}',
-            nbins=30,
-            color_discrete_sequence=['#636EFA']
-        )
-        fig.update_layout(height=400)
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        # vs Price
-        if selected_feature != 'price':
-            fig = px.scatter(
-                df,
-                x=selected_feature,
-                y='price',
-                title=f'{selected_feature} vs Price',
-                trendline='ols',
-                color='price',
-                color_continuous_scale='Viridis'
-            )
-        else:
-            fig = px.box(
-                df,
-                y='price',
-                title=f'{selected_feature} Distribution',
-                color_discrete_sequence=['#636EFA']
-            )
-        
-        fig.update_layout(height=400)
-        st.plotly_chart(fig, use_container_width=True)
-    
-    st.markdown("---")
-    
-    # Statistics
-    st.subheader(f"📊 Statistics for {selected_feature}")
-    
-    stats = {
-        'Count': df[selected_feature].count(),
-        'Mean': df[selected_feature].mean(),
-        'Median': df[selected_feature].median(),
-        'Std Dev': df[selected_feature].std(),
-        'Min': df[selected_feature].min(),
-        'Max': df[selected_feature].max(),
-        'Unique Values': df[selected_feature].nunique()
-    }
-    
-    stats_df = pd.DataFrame(stats.items(), columns=['Metric', 'Value'])
-    st.dataframe(stats_df, use_container_width=True)
-
-# ==================== PAGE: STATISTICS ====================
-elif page == "Statistics":
-    st.title("📊 Detailed Statistics")
-    
-    st.markdown("---")
-    
-    # Summary statistics
-    st.subheader("Summary Statistics")
-    
-    summary_stats = df.describe().T
-    st.dataframe(summary_stats, use_container_width=True)
-    
-    st.markdown("---")
-    
-    # Correlation heatmap
-    st.subheader("🔗 Correlation Matrix")
-    
-    # Select only numeric columns for correlation
-    numeric_df = df.select_dtypes(include=[np.number])
-    corr_matrix = numeric_df.corr()
-    
-    fig = go.Figure(data=go.Heatmap(
-        z=corr_matrix.values,
-        x=corr_matrix.columns,
-        y=corr_matrix.columns,
-        colorscale='RdBu',
-        zmid=0,
-        text=np.round(corr_matrix.values, 2),
-        texttemplate='%{text}',
-        textfont={"size": 8},
-        colorbar=dict(title="Correlation")
-    ))
-    
-    fig.update_layout(width=900, height=900)
-    st.plotly_chart(fig, use_container_width=True)
-    
-    st.markdown("---")
-    
-    # Data info
-    st.subheader("Data Info")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.metric("Total Rows", len(df))
-        st.metric("Total Columns", len(df.columns))
-    
-    with col2:
-        st.metric("Missing Values", df.isnull().sum().sum())
-        st.metric("Numeric Columns", len(df.select_dtypes(include=[np.number]).columns))
-    
-    st.markdown("---")
-    
-    # Column details
-    st.subheader("Column Details")
-    
-    col_info = []
-    for col in df.columns:
-        col_info.append({
-            'Column': col,
-            'Data Type': str(df[col].dtype),
-            'Missing': df[col].isnull().sum(),
-            'Unique': df[col].nunique()
-        })
-    
-    col_info_df = pd.DataFrame(col_info)
-    st.dataframe(col_info_df, use_container_width=True)
-
 # ==================== PAGE: ADDRESS LOOKUP ====================
 elif page == "Address Lookup":
     st.title("🔍 Address Lookup & Price Comparison")
@@ -1273,6 +991,57 @@ elif page == "Address Lookup":
         render_lookup_slot(0, api_base_url)
     with lookup_cols[1]:
         render_lookup_slot(1, api_base_url)
+
+    # ── Neighborhood Statistics Comparison ───────────────────────────────────
+    pred_0 = st.session_state.get(lookup_state_key(0, "prediction"))
+    pred_1 = st.session_state.get(lookup_state_key(1, "prediction"))
+    norm_0 = st.session_state.get(lookup_state_key(0, "normalized"))
+    norm_1 = st.session_state.get(lookup_state_key(1, "normalized"))
+
+    if pred_0 and pred_1:
+        st.markdown("---")
+        st.markdown("## 🏘️ Neighborhood Statistics Comparison")
+
+        feat_0 = pred_0.get("feature_snapshot", {}).get("features", {})
+        feat_1 = pred_1.get("feature_snapshot", {}).get("features", {})
+
+        addr_0 = (norm_0 or {}).get("formatted_address") or (norm_0 or {}).get("address_line_1", "Address 1")
+        addr_1 = (norm_1 or {}).get("formatted_address") or (norm_1 or {}).get("address_line_1", "Address 2")
+
+        def _fmt_currency(val):
+            return f"${val:,.0f}" if val is not None else "N/A"
+
+        def _fmt_pct(val):
+            return f"{val:.1%}" if val is not None else "N/A"
+
+        def _fmt_num(val, decimals=1):
+            return f"{val:,.{decimals}f}" if val is not None else "N/A"
+
+        rows = [
+            ("Neighborhood",         feat_0.get("Neighborhood"),                           feat_1.get("Neighborhood")),
+            ("Predicted Price",       _fmt_currency(pred_0.get("predicted_price")),          _fmt_currency(pred_1.get("predicted_price"))),
+            ("Neighborhood Score",    _fmt_num(feat_0.get("NeighborhoodScore")),              _fmt_num(feat_1.get("NeighborhoodScore"))),
+            ("Median Home Value",     _fmt_currency(feat_0.get("CensusMedianValue")),         _fmt_currency(feat_1.get("CensusMedianValue"))),
+            ("Median Income",         _fmt_currency((feat_0.get("MedianIncomeK") or 0) * 1000) if feat_0.get("MedianIncomeK") else "N/A",
+                                      _fmt_currency((feat_1.get("MedianIncomeK") or 0) * 1000) if feat_1.get("MedianIncomeK") else "N/A"),
+            ("Median Rent",           _fmt_currency(feat_0.get("census_median_rent")),        _fmt_currency(feat_1.get("census_median_rent"))),
+            ("Owner Occupancy Rate",  _fmt_pct(feat_0.get("OwnerOccupiedRate")),              _fmt_pct(feat_1.get("OwnerOccupiedRate"))),
+            ("Rent Burden %",         _fmt_pct(feat_0.get("census_rent_burden_pct")),         _fmt_pct(feat_1.get("census_rent_burden_pct"))),
+            ("Tract Population",      _fmt_num(feat_0.get("census_tract_population"), 0),     _fmt_num(feat_1.get("census_tract_population"), 0)),
+        ]
+
+        # Header row
+        hcol0, hcol1, hcol2 = st.columns([2, 2, 2])
+        hcol0.markdown("**Metric**")
+        hcol1.markdown(f"**{addr_0}**")
+        hcol2.markdown(f"**{addr_1}**")
+        st.divider()
+
+        for label, val_a, val_b in rows:
+            c0, c1, c2 = st.columns([2, 2, 2])
+            c0.markdown(f"**{label}**")
+            c1.markdown(str(val_a) if val_a is not None else "N/A")
+            c2.markdown(str(val_b) if val_b is not None else "N/A")
 
 
 # ==================== PAGE: LIVE API TESTER ====================

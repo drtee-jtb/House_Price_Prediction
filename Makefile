@@ -34,10 +34,10 @@ smoke-real:
 	ENABLE_MOCK_PREDICTOR=false GEOCODING_PROVIDER=free-fallback PROPERTY_DATA_PROVIDER=free-fallback PREDICTION_REUSE_MAX_AGE_HOURS=0 DATABASE_URL=sqlite:///data/processed/real_validation.db python scripts/smoke_api.py
 
 run-api:
-	APP_ENV=test DATABASE_URL=sqlite:///data/processed/live_validation.db uvicorn house_price_prediction.api.main:app --host 0.0.0.0 --port 8000
+	APP_ENV=test DATABASE_URL=sqlite:///data/processed/live_validation.db uvicorn house_price_prediction.app:app --host 0.0.0.0 --port 8000
 
 run-api-live:
-	APP_ENV=test ENABLE_MOCK_PREDICTOR=false GEOCODING_PROVIDER=free-fallback PROPERTY_DATA_PROVIDER=free-fallback PREDICTION_REUSE_MAX_AGE_HOURS=0 DATABASE_URL=sqlite:///data/processed/real_validation.db uvicorn house_price_prediction.api.main:app --host 0.0.0.0 --port 8000
+	APP_ENV=test ENABLE_MOCK_PREDICTOR=false GEOCODING_PROVIDER=free-fallback PROPERTY_DATA_PROVIDER=free-fallback PREDICTION_REUSE_MAX_AGE_HOURS=0 DATABASE_URL=sqlite:///data/processed/real_validation.db uvicorn house_price_prediction.app:app --host 0.0.0.0 --port 8000
 
 run-dashboard:
 	streamlit run dashboard.py --server.address 0.0.0.0 --server.port 8501 --server.headless true --server.enableCORS false --server.enableXsrfProtection false
