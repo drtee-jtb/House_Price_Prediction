@@ -384,133 +384,131 @@ def render_market_metrics(metrics: dict) -> None:
 
 import re as _re
 
-# ── Median King County defaults for the local prediction form ────────────────
-_LOCAL_DEFAULTS = {
-    "bedrooms": 3,
-    "bathrooms": 2.25,
-    "sqft_living": 2079,
-    "sqft_lot": 7618,
-    "floors": 1.5,
-    "waterfront": 0,
-    "view": 0,
-    "condition": 3,
-    "grade": 7,
-    "sqft_above": 1788,
-    "sqft_basement": 291,
-    "yr_built": 1971,
-    "yr_renovated": 0,
-    "zipcode": 98070,
-    "lat": 47.5605,
-    "long": -122.2139,
-    "sqft_living15": 1987,
-    "sqft_lot15": 7620,
-}
+@st.cache_resource
+def _get_offline_pipeline():
+    """Load the PricePredictionPipeline once and cache it for offline use."""
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+        from house_price_prediction.address_to_price import PricePredictionPipeline
+        return PricePredictionPipeline()
+    except Exception as exc:
+        return None
 
 
-def _render_local_prediction_form(slot_index: int, pipeline, parsed_addr: dict) -> None:
-    """Render a property-feature form and predict using the locally loaded model (no API needed)."""
-    st.markdown("---")
+def _run_offline_pipeline(slot_index: int, fallback: dict) -> None:
+    """Predict using the local PricePredictionPipeline when the API is unreachable.
+
+    Uses the address + property details already entered in the main form —
+    no separate form needed.
+    """
+    offline_key = f"offline_prediction_{slot_index}"
+    offline_error_key = f"offline_error_{slot_index}"
+
+    full_address = fallback.get("full_address", "")
+    if not full_address:
+        parts = [p for p in [fallback.get("city", ""), fallback.get("state", ""), fallback.get("postal", "")] if p]
+        full_address = ", ".join(parts)
+
     st.info(
-        "💡 **API server is offline.** Use the form below to get an instant price estimate "
-        "directly from the locally loaded model — no backend required."
+        "⚡ **API server is unreachable — running prediction locally** using your entered property details."
     )
-    st.subheader("🔮 Local Prediction")
 
-    with st.form(f"local_predict_form_{slot_index}"):
-        st.markdown("**📍 Location** (pre-filled from your address)")
-        lc1, lc2, lc3 = st.columns(3)
-        with lc1:
-            l_city = st.text_input("City", value=parsed_addr.get("city", ""))
-        with lc2:
-            l_state = st.text_input("State (2-letter)", value=parsed_addr.get("state", ""), max_chars=2)
-        with lc3:
-            l_zip = st.text_input("ZIP Code", value=parsed_addr.get("postal", ""), max_chars=5)
+    if offline_key not in st.session_state:
+        # Auto-run on first render after API failure
+        _do_offline_predict(slot_index, fallback, full_address, offline_key, offline_error_key)
 
-        st.markdown("**🏠 Property Details**")
-        pd1, pd2, pd3, pd4 = st.columns(4)
-        with pd1:
-            l_beds = st.number_input("Bedrooms", min_value=0, max_value=20, value=_LOCAL_DEFAULTS["bedrooms"])
-        with pd2:
-            l_baths = st.number_input("Bathrooms", min_value=0.0, max_value=10.0, value=_LOCAL_DEFAULTS["bathrooms"], step=0.25)
-        with pd3:
-            l_sqft = st.number_input("Living Area (sqft)", min_value=100, max_value=30000, value=_LOCAL_DEFAULTS["sqft_living"])
-        with pd4:
-            l_lot = st.number_input("Lot Area (sqft)", min_value=100, max_value=2000000, value=_LOCAL_DEFAULTS["sqft_lot"])
+    result = st.session_state.get(offline_key)
+    err    = st.session_state.get(offline_error_key)
 
-        qa1, qa2, qa3, qa4 = st.columns(4)
-        with qa1:
-            l_grade = st.slider("Grade (1–13)", 1, 13, _LOCAL_DEFAULTS["grade"])
-        with qa2:
-            l_cond = st.slider("Condition", 1, 5, _LOCAL_DEFAULTS["condition"])
-        with qa3:
-            l_yr_built = st.number_input("Year Built", min_value=1800, max_value=2026, value=_LOCAL_DEFAULTS["yr_built"])
-        with qa4:
-            l_floors = st.number_input("Floors", min_value=1.0, max_value=4.0, value=_LOCAL_DEFAULTS["floors"], step=0.5)
+    if result:
+        price      = result.get("predicted_price", 0)
+        err_margin = result.get("error_margin", 0)
+        low, high  = price - err_margin, price + err_margin
 
-        gr1, gr2, gr3, gr4 = st.columns(4)
-        with gr1:
-            l_sqft_above = st.number_input("Above-ground sqft", min_value=0, max_value=30000, value=_LOCAL_DEFAULTS["sqft_above"])
-        with gr2:
-            l_sqft_bsmt = st.number_input("Basement sqft", min_value=0, max_value=10000, value=_LOCAL_DEFAULTS["sqft_basement"])
-        with gr3:
-            l_yr_reno = st.number_input("Year Renovated (0=never)", min_value=0, max_value=2026, value=_LOCAL_DEFAULTS["yr_renovated"])
-        with gr4:
-            l_waterfront = st.selectbox("Waterfront", [0, 1], format_func=lambda x: "Yes" if x else "No")
+        st.markdown(
+            f"""
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        padding: 28px 32px; border-radius: 14px; margin: 12px 0 16px 0;
+                        text-align: center; box-shadow: 0 8px 30px rgba(102,126,234,0.4);">
+                <p style="color:rgba(255,255,255,0.85);margin:0 0 6px 0;font-size:1rem;font-weight:500;">
+                    Estimated House Price <span style="font-size:0.8rem;">(offline model)</span>
+                </p>
+                <p style="color:white;margin:0;font-size:3rem;font-weight:800;letter-spacing:1px;">
+                    ${price:,.0f}
+                </p>
+                <p style="color:rgba(255,255,255,0.7);margin:6px 0 0 0;font-size:0.9rem;">
+                    Range: ${low:,.0f} – ${high:,.0f}
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-        with st.expander("🌍 Comparable Nearby Properties (optional)"):
-            nb1, nb2 = st.columns(2)
-            with nb1:
-                l_sqft15 = st.number_input("Avg nearby living sqft", min_value=100, max_value=30000, value=_LOCAL_DEFAULTS["sqft_living15"])
-            with nb2:
-                l_lot15 = st.number_input("Avg nearby lot sqft", min_value=100, max_value=2000000, value=_LOCAL_DEFAULTS["sqft_lot15"])
-
-        local_submit = st.form_submit_button("🔮 Predict Locally", use_container_width=True)
-
-    local_pred_key = f"local_prediction_{slot_index}"
-    if local_submit:
-        # Build zipcode from input; fall back to WA median
-        try:
-            l_zipcode = int(l_zip.strip()) if l_zip.strip().isdigit() else _LOCAL_DEFAULTS["zipcode"]
-        except (ValueError, AttributeError):
-            l_zipcode = _LOCAL_DEFAULTS["zipcode"]
-
-        feature_row = {
-            "id": 0,
-            "date": 0,
-            "bedrooms": int(l_beds),
-            "bathrooms": float(l_baths),
-            "sqft_living": int(l_sqft),
-            "sqft_lot": int(l_lot),
-            "floors": float(l_floors),
-            "waterfront": int(l_waterfront),
-            "view": 0,
-            "condition": int(l_cond),
-            "grade": int(l_grade),
-            "sqft_above": int(l_sqft_above),
-            "sqft_basement": int(l_sqft_bsmt),
-            "yr_built": int(l_yr_built),
-            "yr_renovated": int(l_yr_reno),
-            "zipcode": l_zipcode,
-            "lat": _LOCAL_DEFAULTS["lat"],
-            "long": _LOCAL_DEFAULTS["long"],
-            "sqft_living15": int(l_sqft15),
-            "sqft_lot15": int(l_lot15),
+        feats = result.get("all_16_features", {})
+        _FEAT_LABELS = {
+            "BedroomAbvGr":         ("🛏 Bedrooms",         lambda v: str(int(v))),
+            "FullBath":             ("🚿 Full Baths",        lambda v: str(int(v))),
+            "HalfBath":             ("🚽 Half Baths",        lambda v: str(int(v))),
+            "GrLivArea":            ("📐 Living Area",       lambda v: f"{int(v):,} sqft"),
+            "LotArea":              ("🌿 Lot Area",          lambda v: f"{int(v):,} sqft"),
+            "YearBuilt":            ("🏗 Year Built",        lambda v: str(int(v))),
+            "GarageCars":           ("🚗 Garage Spaces",     lambda v: str(int(v))),
+            "GarageArea":           ("🅿 Garage Area",       lambda v: f"{int(v):,} sqft"),
+            "OverallQual":          ("⭐ Quality (1-10)",    lambda v: str(int(v))),
+            "OverallCond":          ("🔧 Condition (1-10)", lambda v: str(int(v))),
+            "NeighborhoodScore":    ("📍 Nbhd Score",        lambda v: f"{v:.0f}/100"),
+            "CensusMedianValue":    ("🏦 Median Value",      lambda v: f"${v:,.0f}"),
+            "MedianIncomeK":        ("💰 Median Income",     lambda v: f"${v:.0f}k"),
+            "SchoolDistrictRating": ("🎓 School Rating",     lambda v: f"{v:.1f}/10"),
+            "WalkScore":            ("🚶 Walk Score",        lambda v: f"{v:.0f}/100"),
+            "PropertyType":         ("🏡 Property Type",     lambda v: str(v)),
         }
-        try:
-            row_df = pd.DataFrame([feature_row])
-            predicted_price = float(pipeline.predict(row_df)[0])
-            st.session_state[local_pred_key] = predicted_price
-        except Exception as exc:
-            st.session_state[local_pred_key] = None
-            st.error(f"❌ Local prediction failed: {exc}")
+        display_items = []
+        for key, (label, fmt) in _FEAT_LABELS.items():
+            if key in feats:
+                try:
+                    display_items.append((label, fmt(feats[key])))
+                except Exception:
+                    display_items.append((label, str(feats[key])))
 
-    local_pred = st.session_state.get(local_pred_key)
-    if local_pred is not None:
-        st.success("### 🏠 Price Estimate Ready")
-        lpr1, lpr2, lpr3 = st.columns(3)
-        lpr1.metric("Predicted Price", f"${local_pred:,.0f}")
-        lpr2.metric("Model", "LightGBM (local)")
-        lpr3.metric("Source", "Offline / No API")
+        if display_items:
+            st.markdown("##### 🏠 Property Details")
+            for i in range(0, len(display_items), 4):
+                row = display_items[i:i + 4]
+                cols = st.columns(4)
+                for col, (label, val) in zip(cols, row):
+                    col.metric(label, val)
+
+    elif err:
+        st.error(f"❌ Offline prediction failed: {err}")
+
+
+def _do_offline_predict(slot_index, fallback, full_address, result_key, error_key):
+    pipeline = _get_offline_pipeline()
+    if pipeline is None:
+        st.session_state[error_key] = "Could not load offline pipeline."
+        return
+    overrides = {
+        "BedroomAbvGr": fallback.get("bedrooms"),
+        "FullBath":     int(fallback["bathrooms"]) if fallback.get("bathrooms") is not None else None,
+        "HalfBath":     1 if fallback.get("bathrooms") and (fallback["bathrooms"] % 1) >= 0.5 else 0,
+        "GrLivArea":    fallback.get("sqft_living"),
+        "LotArea":      fallback.get("sqft_lot"),
+        "YearBuilt":    fallback.get("yr_built"),
+        "GarageCars":   fallback.get("garage_cars"),
+        "OverallQual":  fallback.get("overall_qual"),
+        "OverallCond":  fallback.get("overall_cond"),
+    }
+    overrides = {k: v for k, v in overrides.items() if v is not None}
+    with st.spinner("🔮 Running offline prediction…"):
+        try:
+            result = pipeline.predict_price(full_address, feature_overrides=overrides if overrides else None)
+            st.session_state[result_key] = result
+            st.session_state.pop(error_key, None)
+        except Exception as exc:
+            st.session_state[error_key] = str(exc)
+            st.session_state.pop(result_key, None)
 
 
 def _parse_address_client(full: str) -> dict:
@@ -740,10 +738,20 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                         }
                 else:
                     st.session_state[normalized_key] = None
-                    # Persist parsed address so the local prediction form stays visible on rerun
+                    # Store address + property inputs so offline pipeline can run without the API
                     st.session_state[f"local_fallback_{slot_index}"] = {
-                        "city": city, "state": state, "postal": postal
+                        "full_address": canonical_full,
+                        "city": city, "state": state, "postal": postal,
+                        "bedrooms":     st.session_state.get(lookup_state_key(slot_index, "p_bedrooms")),
+                        "bathrooms":    st.session_state.get(lookup_state_key(slot_index, "p_bathrooms")),
+                        "sqft_living":  st.session_state.get(lookup_state_key(slot_index, "p_sqft_living")),
+                        "sqft_lot":     st.session_state.get(lookup_state_key(slot_index, "p_sqft_lot")),
+                        "yr_built":     st.session_state.get(lookup_state_key(slot_index, "p_yr_built")),
+                        "garage_cars":  st.session_state.get(lookup_state_key(slot_index, "p_garage_cars")),
+                        "overall_qual": st.session_state.get(lookup_state_key(slot_index, "p_overall_qual")),
+                        "overall_cond": st.session_state.get(lookup_state_key(slot_index, "p_overall_cond")),
                     }
+                    st.session_state.pop(f"local_prediction_{slot_index}", None)
                     error_detail = ""
                     if sc is None:
                         error_detail = "API server is not reachable — is the backend running?"
@@ -761,10 +769,8 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
         normalized = st.session_state.get(normalized_key)
         if not normalized:
             local_fallback = st.session_state.get(f"local_fallback_{slot_index}")
-            if local_fallback and model_artifact is not None:
-                _render_local_prediction_form(slot_index, model_artifact.model, local_fallback)
-            elif local_fallback and model_artifact is None:
-                st.warning("⚠️ No trained model found. Train a model using `scripts/train.py` to enable local predictions.")
+            if local_fallback:
+                _run_offline_pipeline(slot_index, local_fallback)
             else:
                 st.info("Enter an address above and click Search Address.")
             return None

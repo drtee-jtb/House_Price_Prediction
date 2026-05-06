@@ -480,9 +480,8 @@ class PricePredictionPipeline:
             # Handle both raw model and dict-wrapped model formats
             self.model = loaded.get('model', loaded) if isinstance(loaded, dict) else loaded
             print(f"[OK] Model loaded: {model_path}")
-        except FileNotFoundError:
-            print(f"[WARNING] Model not found at {model_path}")
-            print("[INFO] Using baseline demo model")
+        except Exception as exc:
+            print(f"[WARNING] Model not loaded ({type(exc).__name__}: {exc}) — using demo heuristic")
             self.model = None
 
     def predict_price(self, address: str, real_features: Dict = None, feature_overrides: Dict = None) -> Dict:
