@@ -98,8 +98,7 @@ def build_preprocessor(x: pd.DataFrame) -> Pipeline:
             (
                 "onehot",
                 OneHotEncoder(
-                    handle_unknown="infrequent_if_exist",
-                    min_frequency=10,
+                    handle_unknown="ignore",
                     sparse_output=True,
                 ),
             ),

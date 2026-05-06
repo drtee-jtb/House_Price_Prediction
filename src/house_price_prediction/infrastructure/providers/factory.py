@@ -48,7 +48,9 @@ def create_property_data_provider(settings: Settings) -> PropertyDataProvider:
             max_retries=settings.provider_max_retries,
         )
     if provider_name == "free":
-        census_client: PropertyDataProvider = CensusPropertyDataClient()
+        census_client: PropertyDataProvider = CensusPropertyDataClient(
+            timeout_seconds=settings.provider_timeout_seconds,
+        )
         if settings.walkscore_api_key:
             census_client = WalkScoreEnrichmentClient(
                 census_client,
@@ -64,7 +66,10 @@ def create_property_data_provider(settings: Settings) -> PropertyDataProvider:
     if provider_name == "free-fallback":
         fallback_chain: PropertyDataProvider = FallbackPropertyDataProvider(
             providers=(
-                CensusPropertyDataClient(fallback_provider=HeuristicPropertyDataClient()),
+                CensusPropertyDataClient(
+                    fallback_provider=HeuristicPropertyDataClient(),
+                    timeout_seconds=settings.provider_timeout_seconds,
+                ),
                 HeuristicPropertyDataClient(),
                 FakePropertyDataClient(),
             )

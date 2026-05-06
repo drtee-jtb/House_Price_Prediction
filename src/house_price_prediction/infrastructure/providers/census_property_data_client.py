@@ -24,10 +24,15 @@ class CensusPropertyDataClient:
         fallback_provider: PropertyDataProvider | None = None,
         geocoder_base_url: str = "https://geocoding.geo.census.gov/geocoder",
         census_api_base_url: str = "https://api.census.gov/data/2022/acs/acs5",
+        timeout_seconds: float = 10.0,
     ) -> None:
         self._fallback_provider = fallback_provider
         self._geocoder_base_url = geocoder_base_url.rstrip("/")
         self._census_api_base_url = census_api_base_url.rstrip("/")
+        # Per-request timeout; the outer ResilientPropertyDataProvider enforces
+        # an overall wall-clock budget.  Census makes two sequential HTTP calls
+        # (tract lookup + ACS fetch), so each should have its own timeout.
+        self._timeout_seconds = timeout_seconds
 
     def fetch_property_features(
         self,
@@ -101,7 +106,7 @@ class CensusPropertyDataClient:
                 "format": "json",
             },
             headers={"User-Agent": "house-price-prediction-backend/0.1"},
-            timeout=10.0,
+            timeout=self._timeout_seconds,
         )
         response.raise_for_status()
         geographies = response.json().get("result", {}).get("geographies", {})
@@ -143,7 +148,7 @@ class CensusPropertyDataClient:
                 "in": f"state:{geography['state']} county:{geography['county']}",
             },
             headers={"User-Agent": "house-price-prediction-backend/0.1"},
-            timeout=10.0,
+            timeout=self._timeout_seconds,
         )
         response.raise_for_status()
         rows = response.json()
