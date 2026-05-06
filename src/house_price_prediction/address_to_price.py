@@ -466,9 +466,14 @@ class SchoolDistrictFeature:
 class PricePredictionPipeline:
     """Complete pipeline: Address → Features → Price."""
 
-    def __init__(self, model_path: str = 'models/house_price_model.pkl'):
+    def __init__(self, model_path: str | None = None):
         """Initialize the pipeline with trained model."""
         import joblib
+
+        # Default: resolve relative to this file so it works regardless of cwd
+        if model_path is None:
+            _here = Path(__file__).resolve().parent.parent.parent  # repo root
+            model_path = str(_here / "models" / "house_price_model.pkl")
 
         try:
             loaded = joblib.load(model_path)
@@ -480,13 +485,15 @@ class PricePredictionPipeline:
             print("[INFO] Using baseline demo model")
             self.model = None
 
-    def predict_price(self, address: str, real_features: Dict = None) -> Dict:
+    def predict_price(self, address: str, real_features: Dict = None, feature_overrides: Dict = None) -> Dict:
         """
         Predict house price from address.
 
         Args:
             address: Full address (e.g., "123 Oak St, Seattle, WA 98101")
             real_features: Optional dict with real property data to use instead of simulated
+            feature_overrides: Optional dict of property-specific values to merge on top of
+                               census/assessor-derived features (e.g. BedroomAbvGr, YearBuilt).
 
         Returns:
             Dict with:
@@ -508,6 +515,36 @@ class PricePredictionPipeline:
             print("\n[STEP 1/4] Fetching property data from County Assessor...")
             assessor_data = AssessorAPIConnector.search_property_by_address(address)
             price_target = assessor_data.pop('price')  # Extract target
+
+        # Apply user-provided property overrides (e.g. from UI form inputs)
+        if feature_overrides:
+            print(f"\n[OVERRIDES] Applying {len(feature_overrides)} user-provided property values...")
+            assessor_data.update({k: v for k, v in feature_overrides.items() if v is not None})
+
+            # Recompute ALL derived features that depend on overridden base values.
+            # Without this, the model sees stale defaults (e.g. TotRmsAbvGrd=7
+            # when user actually entered 4 beds / 3 baths, or PricePerSqft still
+            # based on the 1910 sqft default rather than the user-supplied sqft).
+            _beds      = int(assessor_data.get('BedroomAbvGr', 3))
+            _full_bath = int(assessor_data.get('FullBath', 2))
+            _half_bath = int(assessor_data.get('HalfBath', 0))
+            _yr_built  = int(assessor_data.get('YearBuilt', 1990))
+            _gr_liv    = float(assessor_data.get('GrLivArea', 1910))
+            _garage    = int(assessor_data.get('GarageCars', 2))
+            _cens_med  = float(assessor_data.get('CensusMedianValue', 350000))
+
+            assessor_data['TotRmsAbvGrd'] = _beds + _full_bath + 2
+            assessor_data['YearRemodAdd'] = _yr_built + 10
+            # ~240 sqft per covered car space (standard single-car is 12x20)
+            assessor_data['GarageArea']   = _garage * 240
+            # PricePerSqft must use the actual living area, not the default 1910
+            if _gr_liv > 0:
+                assessor_data['PricePerSqft'] = round(_cens_med / _gr_liv, 1)
+            assessor_data['LandValue'] = round(_cens_med * 0.25)
+            print(f"[OVERRIDES] Derived → TotRms={assessor_data['TotRmsAbvGrd']}, "
+                  f"YearRemodAdd={assessor_data['YearRemodAdd']}, "
+                  f"GarageArea={assessor_data['GarageArea']}, "
+                  f"PricePerSqft={assessor_data['PricePerSqft']}")
 
         # Step 2: Get school district rating
         print("\n[STEP 2/4] Fetching school district rating...")

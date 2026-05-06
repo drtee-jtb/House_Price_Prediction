@@ -629,17 +629,33 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
             with st.expander("🏠 Property Details (fill in for accurate prediction)", expanded=True):
                 pc1, pc2, pc3, pc4 = st.columns(4)
                 with pc1:
-                    st.number_input("Bedrooms", value=3,
+                    st.number_input("Bedrooms", min_value=0, max_value=20, value=3,
                                     key=lookup_state_key(slot_index, "p_bedrooms"))
                 with pc2:
-                    st.number_input("Bathrooms", value=2.25, step=0.25,
+                    st.number_input("Bathrooms", min_value=0.0, max_value=10.0, value=2.0, step=0.25,
                                     key=lookup_state_key(slot_index, "p_bathrooms"))
                 with pc3:
-                    st.number_input("Living Area (sqft)", value=2079,
+                    st.number_input("Living Area (sqft)", min_value=100, max_value=30000, value=2000,
                                     key=lookup_state_key(slot_index, "p_sqft_living"))
                 with pc4:
-                    st.number_input("Lot Area (sqft)", value=7618,
+                    st.number_input("Lot Area (sqft)", min_value=100, max_value=500000, value=7500,
                                     key=lookup_state_key(slot_index, "p_sqft_lot"))
+
+                pc5, pc6, pc7, pc8 = st.columns(4)
+                with pc5:
+                    st.number_input("Year Built", min_value=1800, max_value=2026, value=1990,
+                                    key=lookup_state_key(slot_index, "p_yr_built"))
+                with pc6:
+                    st.number_input("Garage Spaces", min_value=0, max_value=10, value=2,
+                                    key=lookup_state_key(slot_index, "p_garage_cars"))
+                with pc7:
+                    st.slider("Quality (1–10)", min_value=1, max_value=10, value=7,
+                              help="Overall build quality: 1=Poor, 10=Excellent",
+                              key=lookup_state_key(slot_index, "p_overall_qual"))
+                with pc8:
+                    st.slider("Condition (1–10)", min_value=1, max_value=10, value=5,
+                              help="Current physical condition: 1=Very Poor, 10=Excellent",
+                              key=lookup_state_key(slot_index, "p_overall_cond"))
 
             search_submitted = st.form_submit_button("🔍 Search & Predict Price", use_container_width=True)
 
@@ -697,10 +713,14 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                         "state": body.get("state"),
                         "postal_code": body.get("postal_code"),
                         "country": body.get("country"),
-                        "bedrooms":    st.session_state.get(lookup_state_key(slot_index, "p_bedrooms")),
-                        "bathrooms":   st.session_state.get(lookup_state_key(slot_index, "p_bathrooms")),
-                        "sqft_living": st.session_state.get(lookup_state_key(slot_index, "p_sqft_living")),
-                        "sqft_lot":    st.session_state.get(lookup_state_key(slot_index, "p_sqft_lot")),
+                        "bedrooms":     st.session_state.get(lookup_state_key(slot_index, "p_bedrooms")),
+                        "bathrooms":    st.session_state.get(lookup_state_key(slot_index, "p_bathrooms")),
+                        "sqft_living":  st.session_state.get(lookup_state_key(slot_index, "p_sqft_living")),
+                        "sqft_lot":     st.session_state.get(lookup_state_key(slot_index, "p_sqft_lot")),
+                        "yr_built":     st.session_state.get(lookup_state_key(slot_index, "p_yr_built")),
+                        "garage_cars":  st.session_state.get(lookup_state_key(slot_index, "p_garage_cars")),
+                        "overall_qual": st.session_state.get(lookup_state_key(slot_index, "p_overall_qual")),
+                        "overall_cond": st.session_state.get(lookup_state_key(slot_index, "p_overall_cond")),
                     }
                     if body.get("address_line_2"):
                         pred_payload["address_line_2"] = body.get("address_line_2")
@@ -795,10 +815,14 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
         if existing_prediction:
             price = existing_prediction.get("predicted_price")
             if price is not None:
+                err = existing_prediction.get("error_margin")
+                low  = price - err if err else None
+                high = price + err if err else None
+                range_str = f"${low:,.0f} – ${high:,.0f}" if low and high else ""
                 st.markdown(
                     f"""
                     <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                                padding: 28px 32px; border-radius: 14px; margin: 12px 0 20px 0;
+                                padding: 28px 32px; border-radius: 14px; margin: 12px 0 16px 0;
                                 text-align: center; box-shadow: 0 8px 30px rgba(102,126,234,0.4);">
                         <p style="color: rgba(255,255,255,0.85); margin: 0 0 6px 0; font-size: 1rem; font-weight: 500;">
                             Estimated House Price
@@ -806,10 +830,52 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                         <p style="color: white; margin: 0; font-size: 3rem; font-weight: 800; letter-spacing: 1px;">
                             ${price:,.0f}
                         </p>
+                        {"<p style='color:rgba(255,255,255,0.7);margin:6px 0 0 0;font-size:0.9rem;'>Range: " + range_str + "</p>" if range_str else ""}
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
+
+            # ── Property details grid ─────────────────────────────────────
+            feats = existing_prediction.get("feature_snapshot", {}).get("features", {})
+            _FEAT_LABELS = {
+                "BedroomAbvGr":      ("🛏 Bedrooms",         lambda v: str(int(v))),
+                "FullBath":          ("🚿 Full Baths",        lambda v: str(int(v))),
+                "HalfBath":          ("🚽 Half Baths",        lambda v: str(int(v))),
+                "GrLivArea":         ("📐 Living Area",       lambda v: f"{int(v):,} sqft"),
+                "LotArea":           ("🌿 Lot Area",          lambda v: f"{int(v):,} sqft"),
+                "YearBuilt":         ("🏗 Year Built",        lambda v: str(int(v))),
+                "GarageCars":        ("🚗 Garage Spaces",     lambda v: str(int(v))),
+                "GarageArea":        ("🅿 Garage Area",       lambda v: f"{int(v):,} sqft"),
+                "OverallQual":       ("⭐ Quality (1-10)",    lambda v: str(int(v))),
+                "OverallCond":       ("🔧 Condition (1-10)", lambda v: str(int(v))),
+                "Fireplaces":        ("🔥 Fireplaces",        lambda v: str(int(v))),
+                "TotRmsAbvGrd":      ("🏠 Total Rooms",       lambda v: str(int(v))),
+                "NeighborhoodScore": ("📍 Nbhd Score",        lambda v: f"{v:.0f}/100"),
+                "SchoolDistrictRating": ("🎓 School Rating",  lambda v: f"{v:.1f}/10"),
+                "WalkScore":         ("🚶 Walk Score",        lambda v: f"{v:.0f}/100"),
+                "CensusMedianValue": ("🏦 Median Value",      lambda v: f"${v:,.0f}"),
+                "MedianIncomeK":     ("💰 Median Income",     lambda v: f"${v:.0f}k"),
+                "PropertyType":      ("🏡 Property Type",     lambda v: str(v)),
+            }
+            display_items = []
+            for key, (label, fmt) in _FEAT_LABELS.items():
+                if key in feats:
+                    try:
+                        display_items.append((label, fmt(feats[key])))
+                    except Exception:
+                        display_items.append((label, str(feats[key])))
+            if display_items:
+                st.markdown("##### 🏠 Property Details")
+                chunk_size = 4
+                for i in range(0, len(display_items), chunk_size):
+                    row_items = display_items[i:i + chunk_size]
+                    cols = st.columns(chunk_size)
+                    for col, (label, val) in zip(cols, row_items):
+                        try:
+                            col.metric(label, val)
+                        except Exception:
+                            col.metric(label, str(val))
         prediction_error = st.session_state.get(prediction_error_key)
         if prediction_error:
             st.error(prediction_error["message"])

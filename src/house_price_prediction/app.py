@@ -381,6 +381,16 @@ class PredictionRequest(BaseModel):
     postal_code: str | None = None
     country: str = "US"
     requested_by: str | None = None
+    # Optional property-level overrides to improve prediction accuracy
+    bedrooms: int | None = None
+    bathrooms: float | None = None
+    sqft_living: int | None = None
+    sqft_lot: int | None = None
+    yr_built: int | None = None
+    garage_cars: int | None = None
+    overall_qual: int | None = None
+    overall_cond: int | None = None
+    floors: float | None = None
 
 
 @app.get("/v1/health")
@@ -457,8 +467,21 @@ async def create_prediction(request: PredictionRequest):
     else:
         parts = [p for p in [line1, city, f"{state} {postal_code}".strip()] if p]
         full_address = ", ".join(parts)
+
+    # Build property-level overrides from user-supplied form fields
+    _overrides: dict = {}
+    if request.bedrooms    is not None: _overrides["BedroomAbvGr"] = request.bedrooms
+    if request.bathrooms   is not None: _overrides["FullBath"]     = int(request.bathrooms)
+    if request.bathrooms   is not None: _overrides["HalfBath"]     = 1 if (request.bathrooms % 1) >= 0.5 else 0
+    if request.sqft_living is not None: _overrides["GrLivArea"]    = request.sqft_living
+    if request.sqft_lot    is not None: _overrides["LotArea"]      = request.sqft_lot
+    if request.yr_built    is not None: _overrides["YearBuilt"]    = request.yr_built
+    if request.garage_cars is not None: _overrides["GarageCars"]   = request.garage_cars
+    if request.overall_qual is not None: _overrides["OverallQual"] = request.overall_qual
+    if request.overall_cond is not None: _overrides["OverallCond"] = request.overall_cond
+
     try:
-        result = pipeline.predict_price(full_address)
+        result = pipeline.predict_price(full_address, feature_overrides=_overrides if _overrides else None)
         predicted_price = result.get("predicted_price", 0)
         features = result.get("all_16_features", {})
     except Exception as e:
@@ -470,14 +493,29 @@ async def create_prediction(request: PredictionRequest):
     populated = sum(1 for v in features.values() if v not in (None, 0, '', 'Unknown'))
     completeness_score = round(populated / total_features, 4) if total_features else 0.0
 
+    # Key property fields to highlight in the UI
+    _PROPERTY_DISPLAY_KEYS = [
+        "BedroomAbvGr", "FullBath", "HalfBath", "GrLivArea", "LotArea",
+        "YearBuilt", "GarageCars", "GarageArea", "OverallQual", "OverallCond",
+        "Fireplaces", "TotRmsAbvGrd",
+        "NeighborhoodScore", "CensusMedianValue", "MedianIncomeK",
+        "SchoolDistrictRating", "WalkScore", "PropertyType", "City", "State",
+    ]
+    property_features = {
+        k: (round(v, 2) if isinstance(v, float) else v)
+        for k in _PROPERTY_DISPLAY_KEYS
+        if k in features and features[k] not in (None, "")
+    }
+
     return {
         "prediction_id": str(uuid.uuid4()),
         "request_id": str(uuid.uuid4()),
         "predicted_price": predicted_price,
+        "confidence": result.get("confidence"),
+        "error_margin": result.get("error_margin"),
         "feature_snapshot": {
             "completeness_score": completeness_score,
-            "features": {k: round(v, 2) if isinstance(v, float) else v
-                         for k, v in list(features.items())[:4]},
+            "features": property_features,
         },
         "address_line_1": line1,
         "city": city,
