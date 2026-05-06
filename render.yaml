@@ -2,7 +2,7 @@ services:
   - type: web
     name: house-price-api
     runtime: python
-    buildCommand: pip install -r requirements.txt && pip install -e .
+    buildCommand: apt-get install -y libgomp1 && pip install -r requirements.txt && pip install -e .
     startCommand: uvicorn house_price_prediction.app:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: APP_ENV

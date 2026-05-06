@@ -82,6 +82,22 @@ class NormalizedAddress(BaseModel):
 
 class PredictionRequestPayload(AddressPayload):
     requested_by: Optional[str] = None
+    # Optional King County-style property features for accurate prediction
+    bedrooms: Optional[int] = None
+    bathrooms: Optional[float] = None
+    sqft_living: Optional[int] = None
+    sqft_lot: Optional[int] = None
+    floors: Optional[float] = None
+    waterfront: Optional[int] = None
+    view: Optional[int] = None
+    condition: Optional[int] = None
+    grade: Optional[int] = None
+    sqft_above: Optional[int] = None
+    sqft_basement: Optional[int] = None
+    yr_built: Optional[int] = None
+    yr_renovated: Optional[int] = None
+    sqft_living15: Optional[int] = None
+    sqft_lot15: Optional[int] = None
 
 
 class PredictionResponse(BaseModel):
@@ -174,46 +190,53 @@ def get_coordinates(city: str, state: str) -> tuple[float, float]:
     return (float(lat), float(lon))
 
 
-# Median/typical defaults matching the trained model's feature schema
+# Median defaults matching the trained King County model's feature schema
 _MODEL_FEATURE_DEFAULTS: dict = {
-    "LotArea": 8000,
-    "OverallQual": 6,
-    "OverallCond": 5,
-    "YearBuilt": 1990,
-    "YearRemodAdd": 2000,
-    "GrLivArea": 1500,
-    "FullBath": 2,
-    "HalfBath": 0,
-    "BedroomAbvGr": 3,
-    "TotRmsAbvGrd": 7,
-    "Fireplaces": 0,
-    "GarageCars": 2,
-    "GarageArea": 400,
-    "NeighborhoodScore": 5.0,
-    "CensusMedianValue": 200000,
-    "MedianIncomeK": 55.0,
-    "OwnerOccupiedRate": 0.65,
-    "PropertyType": "single_family",
-    "City": "",
-    "ZipCode": "",
-    "State": "",
-    "SchoolDistrictRating": 6.0,
-    "WalkScore": 50,
-    "HOAFee": 0,
-    "PricePerSqft": 150,
-    "LandValue": 50000,
+    "id": 0,
+    "date": 0,
+    "bedrooms": 3,
+    "bathrooms": 2.25,
+    "sqft_living": 2079,
+    "sqft_lot": 7618,
+    "floors": 1.5,
+    "waterfront": 0,
+    "view": 0,
+    "condition": 3,
+    "grade": 7,
+    "sqft_above": 1788,
+    "sqft_basement": 291,
+    "yr_built": 1971,
+    "yr_renovated": 0,
+    "zipcode": 98070,
+    "lat": 47.5605,
+    "long": -122.2139,
+    "sqft_living15": 1987,
+    "sqft_lot15": 7620,
 }
 
 
-def predict_price(address: NormalizedAddress) -> tuple[float, dict]:
+def predict_price(address: NormalizedAddress, extra: dict | None = None) -> tuple[float, dict]:
     """Predict house price using the loaded pipeline with address-derived feature values."""
 
-    # Start from sensible median defaults, then fill in real address values
+    # Start from sensible median King County defaults
     defaults: dict = dict(_MODEL_FEATURE_DEFAULTS)
-    defaults["City"] = (address.city or "").strip().title()
-    defaults["State"] = (address.state or "").strip().upper()
+
+    # Override with real address-derived values
+    if address.latitude is not None:
+        defaults["lat"] = address.latitude
+    if address.longitude is not None:
+        defaults["long"] = address.longitude
     if address.postal_code:
-        defaults["ZipCode"] = address.postal_code.split("-")[0].strip()
+        try:
+            defaults["zipcode"] = int(address.postal_code.split("-")[0].strip())
+        except ValueError:
+            pass
+
+    # Override with explicitly provided property features
+    if extra:
+        for k, v in extra.items():
+            if k in defaults and v is not None:
+                defaults[k] = v
 
     # Build feature row aligned to what the pipeline expects
     if model and hasattr(model, "feature_names_in_"):
@@ -227,22 +250,17 @@ def predict_price(address: NormalizedAddress) -> tuple[float, dict]:
             price = max(50000, float(prediction))
         except Exception as exc:
             print(f"Model prediction error: {exc}")
-            # Rough heuristic fallback so the API never returns nothing
-            price = float(
-                defaults["GrLivArea"] * 130
-                + defaults["OverallQual"] * 15000
-                + defaults["YearBuilt"] * 50
-                + defaults["GarageArea"] * 60
-            )
-            price = max(50000.0, price)
+            price = max(50000.0, float(
+                defaults["sqft_living"] * 150
+                + defaults["grade"] * 20000
+                + defaults["yr_built"] * 100
+            ))
     else:
-        price = float(
-            defaults["GrLivArea"] * 130
-            + defaults["OverallQual"] * 15000
-            + defaults["YearBuilt"] * 50
-            + defaults["GarageArea"] * 60
-        )
-        price = max(50000.0, price)
+        price = max(50000.0, float(
+            defaults["sqft_living"] * 150
+            + defaults["grade"] * 20000
+            + defaults["yr_built"] * 100
+        ))
 
     return price, features
 
@@ -324,8 +342,16 @@ def create_prediction(payload: PredictionRequestPayload):
             geocoding_source="manual",
         )
 
+        # Collect any provided property features
+        _prop_fields = [
+            "bedrooms", "bathrooms", "sqft_living", "sqft_lot", "floors",
+            "waterfront", "view", "condition", "grade", "sqft_above",
+            "sqft_basement", "yr_built", "yr_renovated", "sqft_living15", "sqft_lot15",
+        ]
+        extra_features = {f: getattr(payload, f) for f in _prop_fields if getattr(payload, f, None) is not None}
+
         # Predict price
-        price, features = predict_price(normalized_addr)
+        price, features = predict_price(normalized_addr, extra_features)
 
         # Compute completeness as fraction of non-None, non-zero feature values
         populated = sum(1 for v in features.values() if v is not None and v != 0)
