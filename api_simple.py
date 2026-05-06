@@ -3,12 +3,13 @@ Simple House Price Prediction API - Minimal Version
 Run with: python -m uvicorn api_simple:app --host 0.0.0.0 --port 8000 --reload
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 import joblib
-import math
+import hashlib
+import pandas as pd
 from uuid import uuid4
 from datetime import datetime
 from starlette import status
@@ -18,12 +19,52 @@ from starlette import status
 # ============================================================================
 
 class AddressPayload(BaseModel):
-    address_line_1: str
+    # Structured fields (all optional — server will parse full_address if omitted)
+    address_line_1: Optional[str] = None
     address_line_2: Optional[str] = None
-    city: str
-    state: str
-    postal_code: str
+    city: Optional[str] = None
+    state: Optional[str] = None
+    postal_code: Optional[str] = None
     country: str = "US"
+    # Free-form full address (parsed server-side when structured fields are missing)
+    full_address: Optional[str] = None
+
+    def resolved_line1(self) -> str:
+        if self.address_line_1:
+            return self.address_line_1
+        if self.full_address:
+            parts = [p.strip() for p in self.full_address.split(",")]
+            return parts[0] if parts else ""
+        return ""
+
+    def resolved_city(self) -> str:
+        if self.city:
+            return self.city
+        if self.full_address:
+            parts = [p.strip() for p in self.full_address.split(",")]
+            if len(parts) >= 2:
+                return parts[-2].strip()
+        return ""
+
+    def resolved_state(self) -> str:
+        if self.state:
+            return self.state
+        if self.full_address:
+            import re
+            m = re.search(r'\b([A-Z]{2})\s+\d{5}', self.full_address, re.IGNORECASE)
+            if m:
+                return m.group(1).upper()
+        return ""
+
+    def resolved_postal(self) -> str:
+        if self.postal_code:
+            return self.postal_code
+        if self.full_address:
+            import re
+            m = re.search(r'\b(\d{5})(?:-\d{4})?\b', self.full_address)
+            if m:
+                return m.group(1)
+        return ""
 
 
 class NormalizedAddress(BaseModel):
@@ -41,6 +82,22 @@ class NormalizedAddress(BaseModel):
 
 class PredictionRequestPayload(AddressPayload):
     requested_by: Optional[str] = None
+    # Optional King County-style property features for accurate prediction
+    bedrooms: Optional[int] = None
+    bathrooms: Optional[float] = None
+    sqft_living: Optional[int] = None
+    sqft_lot: Optional[int] = None
+    floors: Optional[float] = None
+    waterfront: Optional[int] = None
+    view: Optional[int] = None
+    condition: Optional[int] = None
+    grade: Optional[int] = None
+    sqft_above: Optional[int] = None
+    sqft_basement: Optional[int] = None
+    yr_built: Optional[int] = None
+    yr_renovated: Optional[int] = None
+    sqft_living15: Optional[int] = None
+    sqft_lot15: Optional[int] = None
 
 
 class PredictionResponse(BaseModel):
@@ -70,6 +127,35 @@ try:
 except Exception as e:
     print(f"⚠️ Warning: Could not load model: {e}")
     model = None
+
+# In-memory prediction store keyed by prediction_id
+_predictions_store: dict[str, dict] = {}
+
+# Scenario registry — single source of truth used by both endpoints
+_scenarios: list[dict] = [
+    {
+        "scenario_id": "test-ames-1",
+        "label": "Ames Test Property",
+        "category": "validation",
+        "address": {
+            "address_line_1": "413 Duff Ave",
+            "city": "Ames",
+            "state": "IA",
+            "postal_code": "50010",
+        },
+    },
+    {
+        "scenario_id": "test-miami-1",
+        "label": "Miami Test Property",
+        "category": "validation",
+        "address": {
+            "address_line_1": "123 Main St",
+            "city": "Miami",
+            "state": "FL",
+            "postal_code": "33101",
+        },
+    },
+]
 
 
 # ============================================================================
@@ -104,51 +190,78 @@ def get_coordinates(city: str, state: str) -> tuple[float, float]:
     return (float(lat), float(lon))
 
 
-def predict_price(address: NormalizedAddress) -> tuple[float, dict]:
-    """Predict house price based on address"""
-    
-    # Create simple features from address
-    features = {
-        "BedroomAbvGr": 3,
-        "TotRmsAbvGrd": 8,
-        "GrLivArea": 2500,
-        "LotArea": 8000,
-        "FullBath": 2,
-        "HalfBath": 1,
-        "YearBuilt": 2000,
-        "GarageArea": 500,
-    }
-    
-    # Try to extract features from address if model is available
+# Median defaults matching the trained King County model's feature schema
+_MODEL_FEATURE_DEFAULTS: dict = {
+    "id": 0,
+    "date": 0,
+    "bedrooms": 3,
+    "bathrooms": 2.25,
+    "sqft_living": 2079,
+    "sqft_lot": 7618,
+    "floors": 1.5,
+    "waterfront": 0,
+    "view": 0,
+    "condition": 3,
+    "grade": 7,
+    "sqft_above": 1788,
+    "sqft_basement": 291,
+    "yr_built": 1971,
+    "yr_renovated": 0,
+    "zipcode": 98070,
+    "lat": 47.5605,
+    "long": -122.2139,
+    "sqft_living15": 1987,
+    "sqft_lot15": 7620,
+}
+
+
+def predict_price(address: NormalizedAddress, extra: dict | None = None) -> tuple[float, dict]:
+    """Predict house price using the loaded pipeline with address-derived feature values."""
+
+    # Start from sensible median King County defaults
+    defaults: dict = dict(_MODEL_FEATURE_DEFAULTS)
+
+    # Override with real address-derived values
+    if address.latitude is not None:
+        defaults["lat"] = address.latitude
+    if address.longitude is not None:
+        defaults["long"] = address.longitude
+    if address.postal_code:
+        try:
+            defaults["zipcode"] = int(address.postal_code.split("-")[0].strip())
+        except ValueError:
+            pass
+
+    # Override with explicitly provided property features
+    if extra:
+        for k, v in extra.items():
+            if k in defaults and v is not None:
+                defaults[k] = v
+
+    # Build feature row aligned to what the pipeline expects
+    if model and hasattr(model, "feature_names_in_"):
+        features = {name: defaults.get(name, 0) for name in model.feature_names_in_}
+    else:
+        features = dict(defaults)
+
     if model:
         try:
-            # Create feature vector in the right order
-            feature_list = [
-                features.get("BedroomAbvGr", 3),
-                features.get("TotRmsAbvGrd", 8),
-                features.get("GrLivArea", 2500),
-                features.get("LotArea", 8000),
-                features.get("FullBath", 2),
-                features.get("HalfBath", 1),
-                features.get("YearBuilt", 2000),
-                features.get("GarageArea", 500),
-            ]
-            
-            # Make prediction
-            prediction = model.predict([feature_list])[0]
-            price = max(50000, float(prediction))  # Minimum price
-        except Exception as e:
-            print(f"Model prediction error: {e}")
-            price = 350000  # Default price
+            prediction = model.predict(pd.DataFrame([features]))[0]
+            price = max(50000, float(prediction))
+        except Exception as exc:
+            print(f"Model prediction error: {exc}")
+            price = max(50000.0, float(
+                defaults["sqft_living"] * 150
+                + defaults["grade"] * 20000
+                + defaults["yr_built"] * 100
+            ))
     else:
-        # Fallback: simple calculation based on features
-        price = 50000 + (
-            features["BedroomAbvGr"] * 40000 +
-            features["GrLivArea"] * 150 +
-            features["LotArea"] * 5 +
-            features["YearBuilt"] * 100
-        )
-    
+        price = max(50000.0, float(
+            defaults["sqft_living"] * 150
+            + defaults["grade"] * 20000
+            + defaults["yr_built"] * 100
+        ))
+
     return price, features
 
 
@@ -159,11 +272,17 @@ def predict_price(address: NormalizedAddress) -> tuple[float, dict]:
 @app.get("/v1/health")
 def health_check():
     """Health check endpoint"""
+    model_loaded = model is not None
     return {
         "status": "healthy",
         "service": "house-price-api",
         "version": "1.0.0",
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
+        "live_mode_ready": model_loaded,
+        "geocoding_provider": "manual",
+        "property_data_provider": "manual",
+        "mock_predictor_enabled": not model_loaded,
+        "live_mode_issues": [] if model_loaded else ["No ML model loaded; using fallback estimator"],
     }
 
 
@@ -171,19 +290,27 @@ def health_check():
 def normalize_address(payload: AddressPayload):
     """Normalize and geocode an address"""
     try:
-        lat, lon = get_coordinates(payload.city, payload.state)
-        
+        line1   = (payload.resolved_line1() or "").upper()
+        city    = (payload.resolved_city() or "").upper()
+        state   = (payload.resolved_state() or "").upper()
+        postal  = (payload.resolved_postal() or "").upper()
+
+        if not line1 and not city:
+            raise ValueError("Could not resolve address fields — provide address_line_1/city/state/postal_code or a parseable full_address.")
+
+        lat, lon = get_coordinates(city, state)
+
         normalized = NormalizedAddress(
-            address_line_1=payload.address_line_1.upper(),
+            address_line_1=line1,
             address_line_2=payload.address_line_2.upper() if payload.address_line_2 else None,
-            city=payload.city.upper(),
-            state=payload.state.upper(),
-            postal_code=payload.postal_code.upper(),
+            city=city,
+            state=state,
+            postal_code=postal,
             country=payload.country.upper(),
-            formatted_address=f"{payload.address_line_1}, {payload.city}, {payload.state} {payload.postal_code}",
+            formatted_address=f"{line1}, {city}, {state} {postal}".strip(", "),
             latitude=lat,
             longitude=lon,
-            geocoding_source="manual"
+            geocoding_source="manual",
         )
         return normalized
     except Exception as e:
@@ -194,54 +321,97 @@ def normalize_address(payload: AddressPayload):
 def create_prediction(payload: PredictionRequestPayload):
     """Create a price prediction for an address"""
     try:
-        # Get coordinates properly
-        lat, lon = get_coordinates(payload.city, payload.state)
-        
+        line1   = (payload.resolved_line1() or "").upper()
+        city    = (payload.resolved_city() or "").upper()
+        state   = (payload.resolved_state() or "").upper()
+        postal  = (payload.resolved_postal() or "").upper()
+
+        lat, lon = get_coordinates(city, state)
+
         # Normalize address
         normalized_addr = NormalizedAddress(
-            address_line_1=payload.address_line_1.upper(),
+            address_line_1=line1,
             address_line_2=payload.address_line_2.upper() if payload.address_line_2 else None,
-            city=payload.city.upper(),
-            state=payload.state.upper(),
-            postal_code=payload.postal_code.upper(),
+            city=city,
+            state=state,
+            postal_code=postal,
             country=payload.country.upper(),
-            formatted_address=f"{payload.address_line_1}, {payload.city}, {payload.state} {payload.postal_code}",
+            formatted_address=f"{line1}, {city}, {state} {postal}".strip(", "),
             latitude=lat,
             longitude=lon,
-            geocoding_source="manual"
+            geocoding_source="manual",
         )
-        
+
+        # Collect any provided property features
+        _prop_fields = [
+            "bedrooms", "bathrooms", "sqft_living", "sqft_lot", "floors",
+            "waterfront", "view", "condition", "grade", "sqft_above",
+            "sqft_basement", "yr_built", "yr_renovated", "sqft_living15", "sqft_lot15",
+        ]
+        extra_features = {f: getattr(payload, f) for f in _prop_fields if getattr(payload, f, None) is not None}
+
         # Predict price
-        price, features = predict_price(normalized_addr)
-        
-        return PredictionResponse(
-            request_id=str(uuid4()),
-            prediction_id=str(uuid4()),
-            correlation_id=str(uuid4()),
+        price, features = predict_price(normalized_addr, extra_features)
+
+        # Compute completeness as fraction of non-None, non-zero feature values
+        populated = sum(1 for v in features.values() if v is not None and v != 0)
+        completeness = round(populated / max(len(features), 1), 4)
+
+        prediction_id = str(uuid4())
+        request_id = str(uuid4())
+        correlation_id = str(uuid4())
+
+        response = PredictionResponse(
+            request_id=request_id,
+            prediction_id=prediction_id,
+            correlation_id=correlation_id,
             address=normalized_addr,
             predicted_price=price,
-            completeness_score=0.95,
+            completeness_score=completeness,
             feature_snapshot={
                 "features": features,
-                "completeness_score": 0.95,
+                "completeness_score": completeness,
                 "feature_count": len(features),
-                "populated_feature_count": len(features),
-                "key_feature_values": features
-            }
+                "populated_feature_count": populated,
+                "key_feature_values": features,
+            },
         )
+
+        # Persist so GET /v1/predictions/{prediction_id} can serve real data
+        _predictions_store[prediction_id] = response.model_dump()
+
+        return response
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Prediction failed: {str(e)}")
+
+
+@app.get("/v1/predictions")
+def list_predictions(
+    limit: int = Query(10, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """List recent predictions"""
+    all_preds = list(_predictions_store.values())
+    # Return newest first
+    all_preds_sorted = list(reversed(all_preds))
+    return {
+        "predictions": all_preds_sorted[offset : offset + limit],
+        "total": len(all_preds_sorted),
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @app.get("/v1/predictions/{prediction_id}")
 def get_prediction(prediction_id: str):
     """Get prediction details"""
-    return {
-        "prediction_id": prediction_id,
-        "status": "completed",
-        "predicted_price": 350000,
-        "completeness_score": 0.95
-    }
+    stored = _predictions_store.get(prediction_id)
+    if stored is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Prediction '{prediction_id}' not found.",
+        )
+    return stored
 
 
 @app.get("/v1/validation/scenarios")
@@ -250,17 +420,15 @@ def get_scenarios():
     return {
         "scenarios": [
             {
-                "scenario_id": "test-ames-1",
-                "label": "Ames Test Property",
-                "category": "validation",
-                "address": "413 Duff Ave, Ames, IA 50010"
-            },
-            {
-                "scenario_id": "test-miami-1", 
-                "label": "Miami Test Property",
-                "category": "validation",
-                "address": "123 Main St, Miami, FL 33101"
+                "scenario_id": s["scenario_id"],
+                "label": s["label"],
+                "category": s["category"],
+                "address": (
+                    f"{s['address']['address_line_1']}, {s['address']['city']}, "
+                    f"{s['address']['state']} {s['address']['postal_code']}"
+                ),
             }
+            for s in _scenarios
         ]
     }
 
@@ -268,27 +436,69 @@ def get_scenarios():
 @app.post("/v1/validation/run-scenario-batch")
 def run_scenario_batch(payload: dict):
     """Run batch validation scenarios"""
-    return {
-        "total": 2,
-        "passed": 2,
-        "failed": 0,
-        "errors": 0,
-        "results": [
-            {
-                "scenario_id": "test-ames-1",
-                "label": "Ames Test Property",
-                "category": "validation",
-                "pipeline_status": "pass",
-                "predicted_price": 320000,
-                "completeness_score": 0.95,
-                "issues": [],
-                "key_feature_values": {
-                    "BedroomAbvGr": 3,
-                    "TotRmsAbvGrd": 8,
-                    "GrLivArea": 2500
+    requested_ids: list[str] | None = payload.get("scenario_ids")
+    to_run = (
+        [s for s in _scenarios if s["scenario_id"] in requested_ids]
+        if requested_ids is not None
+        else _scenarios
+    )
+
+    results: list[dict] = []
+    passed = failed = errors = 0
+
+    for s in to_run:
+        try:
+            addr = s["address"]
+            lat, lon = get_coordinates(addr["city"], addr["state"])
+            normalized = NormalizedAddress(
+                address_line_1=addr["address_line_1"].upper(),
+                city=addr["city"].upper(),
+                state=addr["state"].upper(),
+                postal_code=addr["postal_code"],
+                country="US",
+                formatted_address=(
+                    f"{addr['address_line_1']}, {addr['city']}, "
+                    f"{addr['state']} {addr['postal_code']}"
+                ),
+                latitude=lat,
+                longitude=lon,
+                geocoding_source="manual",
+            )
+            price, features = predict_price(normalized)
+            populated = sum(1 for v in features.values() if v is not None and v != 0)
+            completeness = round(populated / max(len(features), 1), 4)
+            results.append(
+                {
+                    "scenario_id": s["scenario_id"],
+                    "label": s["label"],
+                    "category": s["category"],
+                    "pipeline_status": "pass",
+                    "predicted_price": price,
+                    "completeness_score": completeness,
+                    "issues": [],
+                    "key_feature_values": dict(list(features.items())[:6]),
                 }
-            }
-        ]
+            )
+            passed += 1
+        except Exception as exc:
+            results.append(
+                {
+                    "scenario_id": s["scenario_id"],
+                    "label": s["label"],
+                    "category": s["category"],
+                    "pipeline_status": "error",
+                    "error_message": str(exc),
+                    "issues": [str(exc)],
+                }
+            )
+            errors += 1
+
+    return {
+        "total": len(results),
+        "passed": passed,
+        "failed": failed,
+        "errors": errors,
+        "results": results,
     }
 
 
@@ -296,16 +506,40 @@ def run_scenario_batch(payload: dict):
 def simulate_policies(payload: dict):
     """Simulate different feature policies"""
     policies = payload.get("policy_names", ["balanced-v1"])
-    
+    address_data = payload.copy()
+    address_data.pop("policy_names", None)
+
+    # Build a normalized address from the payload for a real-ish prediction
+    city = address_data.get("city", "Ames")
+    state = address_data.get("state", "IA")
+    lat, lon = get_coordinates(city, state)
+    normalized = NormalizedAddress(
+        address_line_1=address_data.get("address_line_1", "N/A").upper(),
+        city=city.upper(),
+        state=state.upper(),
+        postal_code=address_data.get("postal_code", ""),
+        country=address_data.get("country", "US").upper(),
+        formatted_address=f"{address_data.get('address_line_1', '')}, {city}, {state}",
+        latitude=lat,
+        longitude=lon,
+        geocoding_source="manual",
+    )
+    base_price, _ = predict_price(normalized)
+
     results = []
     for policy in policies:
-        results.append({
-            "policy_name": policy,
-            "policy_version": "1.0",
-            "predicted_price": 350000 + (hash(policy) % 50000),
-            "completeness_score": 0.92
-        })
-    
+        # Deterministic per-policy offset using a stable hash
+        policy_hash = int(hashlib.md5(policy.encode()).hexdigest(), 16)
+        price_offset = (policy_hash % 50000) - 25000
+        results.append(
+            {
+                "policy_name": policy,
+                "policy_version": "1.0",
+                "predicted_price": max(50000, base_price + price_offset),
+                "completeness_score": 0.92,
+            }
+        )
+
     return {"simulations": results}
 
 
