@@ -1,14 +1,18 @@
 """
 Test the trained model against real addresses with realistic feature values.
 """
-import pickle
-import pandas as pd
+import sys
 from pathlib import Path
 
-MODEL_PATH = Path("models/house_price_model.pkl")
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-with MODEL_PATH.open("rb") as f:
-    model = pickle.load(f)
+import pandas as pd
+from house_price_prediction.model import load_model_artifact
+
+MODEL_PATH = Path("models/house_price_model.joblib")
+artifact = load_model_artifact(MODEL_PATH)
+model = artifact.model
+FEATURE_COLS_FROM_MODEL = list(artifact.metadata.feature_columns)
 
 
 # CensusMedianValue = ZIP-level median price from the training CSV (data/raw/Housing.csv)
@@ -204,7 +208,7 @@ properties = [
     },
 ]
 
-FEATURE_COLS = [k for k in properties[0] if not k.startswith("_")]
+FEATURE_COLS = [k for k in properties[0] if not k.startswith("_") and k in FEATURE_COLS_FROM_MODEL]
 
 print()
 print("=" * 72)
@@ -220,13 +224,14 @@ for prop in properties:
     baths = int(prop["FullBath"])
     prop_type = prop["PropertyType"]
 
-    df = pd.DataFrame([{k: prop[k] for k in FEATURE_COLS}])
+    # Build feature row using model's expected columns; missing keys become NaN
+    row = {col: prop.get(col) for col in FEATURE_COLS_FROM_MODEL}
+    df = pd.DataFrame([row])
     predicted = model.predict(df)[0]
     ppsf = predicted / sqft
 
     print(f"  Address : {address}")
     print(f"  Type    : {label} ({prop_type})  |  {int(sqft):,} sqft  |  {beds}bd/{baths}ba")
-    print(f"  HOA/mo  : ${prop['HOAFee']:.0f}  |  Walk Score: {prop['WalkScore']:.0f}  |  School: {prop['SchoolDistrictRating']}/10")
     print(f"  --> Predicted Price : ${predicted:,.0f}  (${ppsf:.0f}/sqft)")
     if zillow:
         error = predicted - zillow
