@@ -502,7 +502,7 @@ async def create_prediction(request: PredictionRequest):
         "SchoolDistrictRating", "WalkScore", "PropertyType", "City", "State",
     ]
     property_features = {
-        k: (round(v, 2) if isinstance(v, float) else v)
+        k: (round(features[k], 2) if isinstance(features[k], float) else features[k])
         for k in _PROPERTY_DISPLAY_KEYS
         if k in features and features[k] not in (None, "")
     }
