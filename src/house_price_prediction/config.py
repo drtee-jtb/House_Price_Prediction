@@ -104,8 +104,8 @@ def load_settings() -> Settings:
         database_url=os.getenv(
             "DATABASE_URL", "sqlite:///data/processed/house_price_prediction.db"
         ),
-        model_name=os.getenv("MODEL_NAME", "house-price-random-forest"),
-        model_version=os.getenv("MODEL_VERSION", "0.1.0"),
+        model_name=os.getenv("MODEL_NAME", "house-price-lightgbm"),
+        model_version=os.getenv("MODEL_VERSION", "1.0.0"),
         enable_mock_predictor=_get_bool_env("ENABLE_MOCK_PREDICTOR", False),
         property_data_provider=os.getenv(
             "PROPERTY_DATA_PROVIDER", "free-fallback"),

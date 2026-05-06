@@ -240,6 +240,9 @@ class CensusPropertyDataClient:
             "Fireplaces": 1 if (median_home_value or 0) >= 300000 else 0,
             "GarageCars": garage_cars,
             "GarageArea": garage_cars * 260,
+            "BasementSF": 0,
+            "Waterfront": 0,
+            "ViewScore": 0,
             "HouseStyle": house_style,
             # ── new model features surfaced from census context ──────────
             "CensusMedianValue": median_home_value,

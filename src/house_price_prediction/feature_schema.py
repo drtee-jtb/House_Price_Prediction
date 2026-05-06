@@ -26,6 +26,7 @@ DEFAULT_PREDICTION_FEATURES: tuple[str, ...] = (
     "YearBuilt",
     "YearRemodAdd",
     "GrLivArea",
+    "BasementSF",        # finished basement sqft (0 if no basement) — universal signal
     "FullBath",
     "HalfBath",
     "BedroomAbvGr",
@@ -33,11 +34,13 @@ DEFAULT_PREDICTION_FEATURES: tuple[str, ...] = (
     "Fireplaces",
     "GarageCars",
     "GarageArea",
+    "Waterfront",        # 1 if waterfront property, 0 otherwise — 3x premium signal
+    "ViewScore",         # scenic view quality 0–4 (0=none, 4=excellent) — up to 2.7x premium
     # ── property classification ────────────────────────────────────────
-    "PropertyType",     # single_family | condo | townhouse | multifamily | luxury
-    "HouseStyle",       # 1Story | 2Story | SFoyer | …
+    "PropertyType",      # single_family | condo | townhouse | multifamily | luxury
+    "HouseStyle",        # 1Story | 2Story | SFoyer | …
     # ── neighbourhood / market context (all sourced from US Census ACS at inference)
-    # These three features are populated at inference for ANY US address via the
+    # These features are populated at inference for ANY US address via the
     # live Census API, making the model generalise nationally.
     # "Neighborhood" (geographic string) was removed: it encoded KC-specific zip
     # codes as OHE columns during training, producing ~zero signal at inference

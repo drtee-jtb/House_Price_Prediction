@@ -32,6 +32,9 @@ class FakePropertyDataClient:
             "Fireplaces": self._number(seed, "Fireplaces", 0, 2),
             "GarageCars": self._number(seed, "GarageCars", 0, 3),
             "GarageArea": self._number(seed, "GarageArea", 0, 900),
+            "BasementSF": self._number(seed, "BasementSF", 0, 1200),
+            "Waterfront": 1 if self._fraction(seed, "Waterfront") > 0.985 else 0,
+            "ViewScore": 0 if self._fraction(seed, "ViewScore") > 0.10 else self._number(seed, "ViewScoreVal", 1, 4),
             "Neighborhood": self._choice(
                 seed,
                 "Neighborhood",

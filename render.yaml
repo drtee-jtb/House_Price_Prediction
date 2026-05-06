@@ -59,7 +59,7 @@ services:
       --server.headless=true
       --server.enableCORS=false
       --server.enableXsrfProtection=false
-    healthCheckPath: /healthz
+    healthCheckPath: /_stcore/health
     envVars:
       - key: API_BASE_URL
         value: https://house-price-api.onrender.com

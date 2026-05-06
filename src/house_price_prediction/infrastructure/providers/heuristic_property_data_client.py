@@ -56,6 +56,9 @@ class HeuristicPropertyDataClient:
             "Fireplaces": round(self._fraction(seed, "fireplaces") * 2),
             "GarageCars": garage_cars,
             "GarageArea": garage_cars * 240,
+            "BasementSF": 0,
+            "Waterfront": 0,
+            "ViewScore": 0,
             "HouseStyle": "2Story" if urban_score >= 0.55 else "1Story",
             # ── market context features ─────────────────────────────
             "CensusMedianValue": self._estimate_median_value(
