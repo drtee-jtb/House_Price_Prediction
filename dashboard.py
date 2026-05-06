@@ -610,20 +610,17 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                     st.text_input(
                         "State",
                         placeholder="GA",
-                        max_chars=2,
                         key=lookup_state_key(slot_index, "state"),
                     )
                 with col5:
                     st.text_input(
                         "ZIP Code",
                         placeholder="30308",
-                        max_chars=10,
                         key=lookup_state_key(slot_index, "postal"),
                     )
                 with col6:
                     st.text_input(
                         "Country",
-                        max_chars=2,
                         key=lookup_state_key(slot_index, "country"),
                         value=st.session_state.get(lookup_state_key(slot_index, "country"), "US"),
                     )
@@ -632,16 +629,16 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
             with st.expander("🏠 Property Details (fill in for accurate prediction)", expanded=True):
                 pc1, pc2, pc3, pc4 = st.columns(4)
                 with pc1:
-                    st.number_input("Bedrooms", min_value=0, max_value=20, value=3,
+                    st.number_input("Bedrooms", value=3,
                                     key=lookup_state_key(slot_index, "p_bedrooms"))
                 with pc2:
-                    st.number_input("Bathrooms", min_value=0.0, max_value=10.0, value=2.25, step=0.25,
+                    st.number_input("Bathrooms", value=2.25, step=0.25,
                                     key=lookup_state_key(slot_index, "p_bathrooms"))
                 with pc3:
-                    st.number_input("Living Area (sqft)", min_value=100, max_value=30000, value=2079,
+                    st.number_input("Living Area (sqft)", value=2079,
                                     key=lookup_state_key(slot_index, "p_sqft_living"))
                 with pc4:
-                    st.number_input("Lot Area (sqft)", min_value=100, max_value=2000000, value=7618,
+                    st.number_input("Lot Area (sqft)", value=7618,
                                     key=lookup_state_key(slot_index, "p_sqft_lot"))
 
             search_submitted = st.form_submit_button("🔍 Search & Predict Price", use_container_width=True)
