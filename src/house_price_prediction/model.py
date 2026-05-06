@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,18 +10,6 @@ import numpy as np
 from lightgbm import LGBMRegressor
 
 
-@dataclass(frozen=True)
-class ModelMetadata:
-    feature_columns: tuple[str, ...]
-    target_column: str | None
-    model_name: str | None
-    model_version: str | None
-
-
-@dataclass(frozen=True)
-class TrainedModelArtifact:
-    model: Any
-    metadata: ModelMetadata
 from sklearn.compose import TransformedTargetRegressor
 from sklearn.metrics import (
     mean_absolute_error,
@@ -102,7 +92,14 @@ def train_and_save_model(settings: Settings) -> dict[str, float]:
     }
 
     settings.model_path.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(model, settings.model_path)
+    save_model_artifact(
+        model=model,
+        model_path=settings.model_path,
+        feature_columns=list(schema_cols),
+        target_column=settings.target_column,
+        model_name=settings.model_name,
+        model_version=settings.model_version,
+    )
     return metrics
 
 
@@ -114,14 +111,58 @@ def load_model(model_path: Path):
     return joblib.load(model_path)
 
 
-def load_model_artifact(model_path: Path) -> TrainedModelArtifact:
-    model = load_model(model_path)
-    return TrainedModelArtifact(
+@dataclass(frozen=True)
+class ModelArtifactMetadata:
+    feature_columns: tuple[str, ...]
+    target_column: str
+    model_name: str
+    model_version: str
+
+
+@dataclass(frozen=True)
+class TrainedModelArtifact:
+    model: Any
+    metadata: ModelArtifactMetadata
+
+
+def save_model_artifact(
+    model: Any,
+    model_path: Path,
+    feature_columns: list[str] | tuple[str, ...],
+    target_column: str,
+    model_name: str,
+    model_version: str,
+) -> None:
+    model_path = Path(model_path)
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact = TrainedModelArtifact(
         model=model,
-        metadata=ModelMetadata(
-            feature_columns=tuple(),
-            target_column=None,
-            model_name="LightGBM",
-            model_version="1.0",
+        metadata=ModelArtifactMetadata(
+            feature_columns=tuple(feature_columns),
+            target_column=target_column,
+            model_name=model_name,
+            model_version=model_version,
         ),
     )
+    joblib.dump(artifact, model_path)
+
+
+def load_model_artifact(model_path: Path) -> TrainedModelArtifact:
+    model_path = Path(model_path)
+    if not model_path.exists():
+        raise FileNotFoundError(
+            f"Model artifact not found at {model_path}. Train first using scripts/train.py."
+        )
+    obj = joblib.load(model_path)
+    # Support legacy bare-model files (pre-artifact format)
+    if not isinstance(obj, TrainedModelArtifact):
+        return TrainedModelArtifact(
+            model=obj,
+            metadata=ModelArtifactMetadata(
+                feature_columns=tuple(DEFAULT_PREDICTION_FEATURES),
+                target_column="SalePrice",
+                model_name="house-price",
+                model_version="legacy",
+            ),
+        )
+    return obj

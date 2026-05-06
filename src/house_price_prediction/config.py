@@ -1,6 +1,7 @@
 
 import os
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -32,7 +33,6 @@ class Settings:
     raw_data_path: Path
     target_column: str
     model_path: Path
-    model_type: str
     test_size: float
     random_state: int
     app_name: str
@@ -48,6 +48,7 @@ class Settings:
     prediction_reuse_max_age_hours: int
     provider_timeout_seconds: float
     provider_max_retries: int
+    model_type: str = "lightgbm"
     provider_response_cache_max_age_hours: int = 24
     training_min_rows: int = 0
     feature_policy_name: str = "balanced-v1"
@@ -59,6 +60,30 @@ class Settings:
         default_factory=lambda: Path("models/neighborhood_scorer.joblib"))
 
 
+def _get_bool_env(key: str, default: bool) -> bool:
+    val = os.getenv(key)
+    if val is None:
+        return default
+    return val.strip().lower() in ("1", "true", "yes")
+
+
+def _parse_feature_policy_state_overrides(raw: str) -> dict[str, str]:
+    """Parse a comma-separated STATE=policy_name string into a dict."""
+    result: dict[str, str] = {}
+    if not raw:
+        return result
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if "=" in pair:
+            state, policy = pair.split("=", 1)
+            state = state.strip().upper()
+            policy = policy.strip()
+            if state and policy:
+                result[state] = policy
+    return result
+
+
+@lru_cache(maxsize=1)
 def load_settings() -> Settings:
     """Load settings from environment variables with sensible defaults."""
     load_dotenv()
@@ -66,7 +91,7 @@ def load_settings() -> Settings:
     return Settings(
         raw_data_path=Path(
             os.getenv("RAW_DATA_PATH", "data/raw/housing.csv")),
-        target_column=os.getenv("TARGET_COLUMN", "PRICE"),
+        target_column=os.getenv("TARGET_COLUMN", "SalePrice"),
         model_path=Path(
             os.getenv("MODEL_PATH", "models/house_price_model.pkl")),
         model_type=os.getenv("MODEL_TYPE", "lightgbm").strip().lower(),
