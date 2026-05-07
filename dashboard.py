@@ -474,9 +474,9 @@ def _run_offline_pipeline(slot_index: int, fallback: dict) -> None:
 
         if display_items:
             st.markdown("##### 🏠 Property Details")
-            for i in range(0, len(display_items), 4):
-                row = display_items[i:i + 4]
-                cols = st.columns(4)
+            for i in range(0, len(display_items), 3):
+                row = display_items[i:i + 3]
+                cols = st.columns(3)
                 for col, (label, val) in zip(cols, row):
                     col.metric(label, val)
 
@@ -873,7 +873,7 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                         display_items.append((label, str(feats[key])))
             if display_items:
                 st.markdown("##### 🏠 Property Details")
-                chunk_size = 4
+                chunk_size = 3
                 for i in range(0, len(display_items), chunk_size):
                     row_items = display_items[i:i + chunk_size]
                     cols = st.columns(chunk_size)
