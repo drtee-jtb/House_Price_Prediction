@@ -451,7 +451,7 @@ def _run_offline_pipeline(slot_index: int, fallback: dict) -> None:
             "FullBath":             ("🚿 Full Baths",        lambda v: str(int(v))),
             "HalfBath":             ("🚽 Half Baths",        lambda v: str(int(v))),
             "GrLivArea":            ("📐 Living Area",       lambda v: f"{int(v):,} sqft"),
-            "LotArea":              ("🌿 Lot Area",          lambda v: f"{int(v):,} sqft"),
+            "LotArea":              ("🌿 Lot Size",          lambda v: f"{int(v)/43560:.2f} Acres"),
             "YearBuilt":            ("🏗 Year Built",        lambda v: str(int(v))),
             "GarageCars":           ("🚗 Garage Spaces",     lambda v: str(int(v))),
             "GarageArea":           ("🅿 Garage Area",       lambda v: f"{int(v):,} sqft"),
@@ -636,7 +636,7 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                     st.number_input("Living Area (sqft)", min_value=100, max_value=30000, value=2000,
                                     key=lookup_state_key(slot_index, "p_sqft_living"))
                 with pc4:
-                    st.number_input("Lot Area (sqft)", min_value=100, max_value=500000, value=7500,
+                    st.number_input("Lot Size (sqft — 1 acre = 43,560)", min_value=100, max_value=500000, value=7500,
                                     key=lookup_state_key(slot_index, "p_sqft_lot"))
 
                 pc5, pc6, pc7, pc8 = st.columns(4)
@@ -849,7 +849,7 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                 "FullBath":          ("🚿 Full Baths",        lambda v: str(int(v))),
                 "HalfBath":          ("🚽 Half Baths",        lambda v: str(int(v))),
                 "GrLivArea":         ("📐 Living Area",       lambda v: f"{int(v):,} sqft"),
-                "LotArea":           ("🌿 Lot Area",          lambda v: f"{int(v):,} sqft"),
+                "LotArea":           ("🌿 Lot Size",          lambda v: f"{int(v)/43560:.2f} Acres"),
                 "YearBuilt":         ("🏗 Year Built",        lambda v: str(int(v))),
                 "GarageCars":        ("🚗 Garage Spaces",     lambda v: str(int(v))),
                 "GarageArea":        ("🅿 Garage Area",       lambda v: f"{int(v):,} sqft"),
