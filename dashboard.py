@@ -905,9 +905,6 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                 longitude="lon",
                 zoom=14,
             )
-        with st.expander("📊 Dataset Market Context", expanded=False):
-            metrics = calculate_market_metrics(df)
-            render_market_metrics(metrics)
         return normalized
 
 # Sidebar
