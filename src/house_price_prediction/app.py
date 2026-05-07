@@ -444,6 +444,7 @@ async def normalize_address(request: NormalizeAddressRequest):
         "formatted_address": display,
         "latitude": lat,
         "longitude": lon,
+        "geocoding_source": "Nominatim" if lat is not None else None,
     }
 
 
@@ -516,6 +517,7 @@ async def create_prediction(request: PredictionRequest):
         "feature_snapshot": {
             "completeness_score": completeness_score,
             "features": property_features,
+            "user_provided_fields": list(_overrides.keys()),
         },
         "address_line_1": line1,
         "city": city,

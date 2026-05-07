@@ -628,24 +628,30 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
             with st.expander("🏠 Property Details (fill in for accurate prediction)", expanded=True):
                 pc1, pc2, pc3, pc4 = st.columns(4)
                 with pc1:
-                    st.number_input("Bedrooms", min_value=0, max_value=20, value=3,
+                    st.number_input("Bedrooms", min_value=0, max_value=20, value=None,
+                                    placeholder="e.g. 3",
                                     key=lookup_state_key(slot_index, "p_bedrooms"))
                 with pc2:
-                    st.number_input("Bathrooms", min_value=0.0, max_value=10.0, value=2.0, step=0.25,
+                    st.number_input("Bathrooms", min_value=0.0, max_value=10.0, value=None, step=0.25,
+                                    placeholder="e.g. 2.0",
                                     key=lookup_state_key(slot_index, "p_bathrooms"))
                 with pc3:
-                    st.number_input("Living Area (sqft)", min_value=100, max_value=30000, value=2000,
+                    st.number_input("Living Area (sqft)", min_value=100, max_value=30000, value=None,
+                                    placeholder="e.g. 2000",
                                     key=lookup_state_key(slot_index, "p_sqft_living"))
                 with pc4:
-                    st.number_input("Lot Size (sqft — 1 acre = 43,560)", min_value=100, max_value=500000, value=7500,
+                    st.number_input("Lot Size (sqft — 1 acre = 43,560)", min_value=100, max_value=500000, value=None,
+                                    placeholder="e.g. 7500",
                                     key=lookup_state_key(slot_index, "p_sqft_lot"))
 
                 pc5, pc6, pc7, pc8 = st.columns(4)
                 with pc5:
-                    st.number_input("Year Built", min_value=1800, max_value=2026, value=1990,
+                    st.number_input("Year Built", min_value=1800, max_value=2026, value=None,
+                                    placeholder="e.g. 2003",
                                     key=lookup_state_key(slot_index, "p_yr_built"))
                 with pc6:
-                    st.number_input("Garage Spaces", min_value=0, max_value=10, value=2,
+                    st.number_input("Garage Spaces", min_value=0, max_value=10, value=None,
+                                    placeholder="e.g. 2",
                                     key=lookup_state_key(slot_index, "p_garage_cars"))
                 with pc7:
                     st.slider("Quality (1–10)", min_value=1, max_value=10, value=7,
@@ -836,6 +842,10 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
 
             # ── Property details grid ─────────────────────────────────────
             feats = existing_prediction.get("feature_snapshot", {}).get("features", {})
+            user_provided = set(existing_prediction.get("feature_snapshot", {}).get("user_provided_fields", []))
+            _ESTIMATED_KEYS = {"YearBuilt", "BedroomAbvGr", "FullBath", "HalfBath",
+                               "GrLivArea", "LotArea", "GarageCars", "GarageArea",
+                               "Fireplaces", "TotRmsAbvGrd"}
             _FEAT_LABELS = {
                 "BedroomAbvGr":      ("🛏 Bedrooms",         lambda v: str(int(v))),
                 "FullBath":          ("🚿 Full Baths",        lambda v: str(int(v))),
@@ -845,7 +855,6 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                 "YearBuilt":         ("🏗 Year Built",        lambda v: str(int(v))),
                 "GarageCars":        ("🚗 Garage Spaces",     lambda v: str(int(v))),
                 "GarageArea":        ("🅿 Garage Area",       lambda v: f"{int(v):,} sqft"),
-                "OverallQual":       ("⭐ Quality",          lambda v: f"{int(v)}/10"),
                 "OverallCond":       ("🔧 Condition",         lambda v: f"{int(v)}/10"),
                 "Fireplaces":        ("🔥 Fireplaces",        lambda v: str(int(v))),
                 "TotRmsAbvGrd":      ("🏠 Total Rooms",       lambda v: str(int(v))),
@@ -861,7 +870,10 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
             for key, (label, fmt) in _FEAT_LABELS.items():
                 if key in feats:
                     try:
-                        display_items.append((label, fmt(feats[key])))
+                        val_str = fmt(feats[key])
+                        if key in _ESTIMATED_KEYS and key not in user_provided:
+                            val_str += " *"
+                        display_items.append((label, val_str))
                     except Exception:
                         display_items.append((label, str(feats[key])))
             if display_items:
@@ -875,6 +887,7 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                             col.metric(label, val)
                         except Exception:
                             col.metric(label, str(val))
+                st.caption("* area estimate — enter your property's actual details in the form above for accuracy")
         prediction_error = st.session_state.get(prediction_error_key)
         if prediction_error:
             st.error(prediction_error["message"])
