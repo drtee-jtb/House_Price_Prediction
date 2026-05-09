@@ -68,7 +68,7 @@ def load_settings() -> Settings:
             os.getenv("RAW_DATA_PATH", "data/raw/housing.csv")),
         target_column=os.getenv("TARGET_COLUMN", "SalePrice"),
         model_path=Path(
-            os.getenv("MODEL_PATH", "models/house_price_model.pkl")),
+            os.getenv("MODEL_PATH", "models/nationwide_smart_router.pkl")),
         model_type=os.getenv("MODEL_TYPE", "lightgbm").strip().lower(),
         test_size=float(os.getenv("TEST_SIZE", "0.2")),
         random_state=int(os.getenv("RANDOM_STATE", "42")),
