@@ -188,17 +188,21 @@ def load_data():
 @st.cache_resource
 def load_trained_model():
     """Load the most recently modified model artifact (.pkl or .joblib) from the models directory."""
+    import sys
     from pathlib import Path
     from src.house_price_prediction.model import load_model_artifact
 
+    # model_utils is required by nationwide_smart_router.pkl at unpickle time
+    scripts_dir = str(Path(__file__).parent / "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+
     models_dir = Path(__file__).parent / "models"
-    candidates = list(models_dir.glob("*.pkl")) + list(models_dir.glob("*.joblib"))
+    model_path = models_dir / "nationwide_smart_router.pkl"
 
-    if not candidates:
-        st.warning(f"⚠️ No model files found in {models_dir}")
+    if not model_path.exists():
+        st.warning(f"⚠️ Model file not found: {model_path}")
         return None
-
-    model_path = max(candidates, key=lambda p: p.stat().st_mtime)
 
     try:
         artifact = load_model_artifact(model_path)
@@ -562,6 +566,33 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
     if prediction_error_key not in st.session_state:
         st.session_state[prediction_error_key] = None
 
+    # Apply prefill from existing prediction snapshot BEFORE the form renders,
+    # so the form shows heuristic estimates the user can correct.
+    # Only fills keys the user hasn't explicitly set (i.e. still None).
+    _existing_pred = st.session_state.get(prediction_key)
+    if _existing_pred:
+        _snap = _existing_pred.get("feature_snapshot", {}).get("features", {})
+        _user_provided = set(_existing_pred.get("feature_snapshot", {}).get("user_provided_fields", []))
+        _auto_prefills = [
+            (lookup_state_key(slot_index, "p_bedrooms"),    "BedroomAbvGr", int),
+            (lookup_state_key(slot_index, "p_bathrooms"),   "FullBath",     float),
+            (lookup_state_key(slot_index, "p_sqft_living"), "GrLivArea",    int),
+            (lookup_state_key(slot_index, "p_sqft_lot"),    "LotArea",      int),
+            (lookup_state_key(slot_index, "p_yr_built"),    "YearBuilt",    int),
+            (lookup_state_key(slot_index, "p_garage_cars"), "GarageCars",   int),
+        ]
+        _heuristic_key = f"heuristic_prefill_{slot_index}"
+        _heuristic_store = st.session_state.get(_heuristic_key, {})
+        for _sk, _fk, _cast in _auto_prefills:
+            if _fk not in _user_provided and _fk in _snap and st.session_state.get(_sk) is None:
+                try:
+                    val = _cast(_snap[_fk])
+                    st.session_state[_sk] = val
+                    _heuristic_store[_sk] = val  # remember this was auto-filled
+                except Exception:
+                    pass
+        st.session_state[_heuristic_key] = _heuristic_store
+
     slot_label = f"Search Address {slot_index + 1}"
     with st.container(border=True):
         st.markdown(f"### {slot_label}")
@@ -706,9 +737,23 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                     # Clear any stale local-fallback state when API succeeds
                     st.session_state.pop(f"local_fallback_{slot_index}", None)
                     st.session_state.pop(f"local_prediction_{slot_index}", None)
+                    # Clear heuristic-prefill tracking so fresh address gets fresh estimates
+                    st.session_state.pop(f"heuristic_prefill_{slot_index}", None)
                     st.success("✅ Address found!")
                     # Auto-trigger prediction immediately
                     formatted = body.get("formatted_address") or body.get("address_line_1", "")
+                    # Only send a form field as a user override if it was explicitly changed
+                    # from the heuristic pre-fill value — prevents auto-filled values from
+                    # masquerading as user-confirmed data (removes * incorrectly).
+                    _hp = st.session_state.get(f"heuristic_prefill_{slot_index}", {})
+                    def _override(state_key):
+                        val = st.session_state.get(state_key)
+                        if val is None:
+                            return None
+                        # If the value is identical to what we auto-prefilled, treat as heuristic
+                        if _hp.get(state_key) is not None and val == _hp[state_key]:
+                            return None
+                        return val
                     pred_payload = {
                         "full_address": formatted,
                         "address_line_1": body.get("address_line_1"),
@@ -716,14 +761,14 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                         "state": body.get("state"),
                         "postal_code": body.get("postal_code"),
                         "country": body.get("country"),
-                        "bedrooms":     st.session_state.get(lookup_state_key(slot_index, "p_bedrooms")),
-                        "bathrooms":    st.session_state.get(lookup_state_key(slot_index, "p_bathrooms")),
-                        "sqft_living":  st.session_state.get(lookup_state_key(slot_index, "p_sqft_living")),
-                        "sqft_lot":     st.session_state.get(lookup_state_key(slot_index, "p_sqft_lot")),
-                        "yr_built":     st.session_state.get(lookup_state_key(slot_index, "p_yr_built")),
-                        "garage_cars":  st.session_state.get(lookup_state_key(slot_index, "p_garage_cars")),
-                        "overall_qual": st.session_state.get(lookup_state_key(slot_index, "p_overall_qual")),
-                        "overall_cond": st.session_state.get(lookup_state_key(slot_index, "p_overall_cond")),
+                        "bedrooms":     _override(lookup_state_key(slot_index, "p_bedrooms")),
+                        "bathrooms":    _override(lookup_state_key(slot_index, "p_bathrooms")),
+                        "sqft_living":  _override(lookup_state_key(slot_index, "p_sqft_living")),
+                        "sqft_lot":     _override(lookup_state_key(slot_index, "p_sqft_lot")),
+                        "yr_built":     _override(lookup_state_key(slot_index, "p_yr_built")),
+                        "garage_cars":  _override(lookup_state_key(slot_index, "p_garage_cars")),
+                        "overall_qual": _override(lookup_state_key(slot_index, "p_overall_qual")),
+                        "overall_cond": _override(lookup_state_key(slot_index, "p_overall_cond")),
                     }
                     if body.get("address_line_2"):
                         pred_payload["address_line_2"] = body.get("address_line_2")
@@ -735,6 +780,8 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                         st.session_state[prediction_key] = pred_body
                         st.session_state[prediction_error_key] = None
                         st.session_state["last_prediction_id"] = str(pred_body.get("prediction_id", ""))
+                        # Prefill is handled at the top of render_lookup_slot on every run
+                        st.rerun()
                     else:
                         st.session_state[prediction_key] = None
                         st.session_state[prediction_error_key] = {
@@ -884,7 +931,7 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                             col.metric(label, val)
                         except Exception:
                             col.metric(label, str(val))
-                st.caption("* area estimate — enter your property's actual details in the form above for accuracy")
+                st.caption("* estimated value — the form above has been pre-filled with these estimates. Correct any that differ from your property's actual details and re-submit for a more accurate prediction.")
         prediction_error = st.session_state.get(prediction_error_key)
         if prediction_error:
             st.error(prediction_error["message"])
@@ -986,7 +1033,7 @@ if page == "Overview":
     
     # Model Status
     if model_artifact:
-        st.success("✅ **Trained Model Loaded** from `models/house_price_model.pkl`")
+        st.success("✅ **Trained Model Loaded** from `models/nationwide_smart_router.pkl`")
         col_meta1, col_meta2, col_meta3 = st.columns(3)
         with col_meta1:
             st.metric("Model Name", model_artifact.metadata.model_name or "Random Forest")
