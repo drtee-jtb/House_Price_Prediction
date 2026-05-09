@@ -186,7 +186,7 @@ class AssessorAPIConnector:
         # B25077=median home value, B19013=median income, B25064=median gross rent
         url = (
             f"https://api.census.gov/data/2023/acs/acs5"
-            f"?get=B25035_001E,B25018_001E,B25041_002E,B25041_003E,B25041_004E,B25041_005E,B25077_001E,B19013_001E"
+            f"?get=B25035_001E,B25018_001E,B25041_003E,B25041_004E,B25041_005E,B25041_006E,B25077_001E,B19013_001E"
             f"&for=tract:{tract_fips}&in=state:{state_fips}+county:{county_fips}"
         )
         req = urllib.request.Request(url, headers={"User-Agent": "HousePricePrediction/1.0"})
@@ -205,10 +205,11 @@ class AssessorAPIConnector:
             except (ValueError, IndexError, TypeError):
                 return None
 
-        cnt_1br = _get("B25041_002E") or 0
-        cnt_2br = _get("B25041_003E") or 0
-        cnt_3br = _get("B25041_004E") or 0
-        cnt_4br = _get("B25041_005E") or 0
+        # _003E=1BR, _004E=2BR, _005E=3BR, _006E=4BR (per Census B25041 codebook)
+        cnt_1br = _get("B25041_003E") or 0
+        cnt_2br = _get("B25041_004E") or 0
+        cnt_3br = _get("B25041_005E") or 0
+        cnt_4br = _get("B25041_006E") or 0
         modal_beds = max(
             [(cnt_1br, 1), (cnt_2br, 2), (cnt_3br, 3), (cnt_4br, 4)],
             key=lambda x: x[0]
@@ -238,10 +239,10 @@ class AssessorAPIConnector:
             # B19013_001E = median household income
             # B25035_001E = median year structure built
             # B25018_001E = median number of rooms
-            # B25041_003E = 2-bedroom units, B25041_004E = 3-bedroom, B25041_005E = 4-bedroom
+            # B25041_003E=1BR, _004E=2BR, _005E=3BR, _006E=4BR (per Census B25041 codebook)
             url = (
                 f"https://api.census.gov/data/2023/acs/acs5"
-                f"?get=B25077_001E,B19013_001E,B25035_001E,B25018_001E,B25041_003E,B25041_004E,B25041_005E"
+                f"?get=B25077_001E,B19013_001E,B25035_001E,B25018_001E,B25041_003E,B25041_004E,B25041_005E,B25041_006E"
                 f"&for=zip%20code%20tabulation%20area:{zipcode}"
             )
             req = urllib.request.Request(url, headers={"User-Agent": "HousePricePrediction/1.0"})
@@ -259,17 +260,15 @@ class AssessorAPIConnector:
                 median_income     = _get("B19013_001E")
                 median_yr_built   = _get("B25035_001E")
                 median_rooms      = _get("B25018_001E")   # integer rooms
-                cnt_2br = _get("B25041_003E") or 0
-                cnt_3br = _get("B25041_004E") or 0
-                cnt_4br = _get("B25041_005E") or 0
-                # Most common bedroom count in this ZIP
-                modal_beds = 3  # default
-                if cnt_3br >= cnt_2br and cnt_3br >= cnt_4br:
-                    modal_beds = 3
-                elif cnt_2br >= cnt_3br and cnt_2br >= cnt_4br:
-                    modal_beds = 2
-                elif cnt_4br >= cnt_3br and cnt_4br >= cnt_2br:
-                    modal_beds = 4
+                # _003E=1BR, _004E=2BR, _005E=3BR, _006E=4BR (per Census B25041 codebook)
+                cnt_1br = _get("B25041_003E") or 0
+                cnt_2br = _get("B25041_004E") or 0
+                cnt_3br = _get("B25041_005E") or 0
+                cnt_4br = _get("B25041_006E") or 0
+                modal_beds = max(
+                    [(cnt_1br, 1), (cnt_2br, 2), (cnt_3br, 3), (cnt_4br, 4)],
+                    key=lambda x: x[0]
+                )[1]
                 print(f"[CENSUS-ACS] zip={zipcode}  value=${median_home_value}  income=${median_income}  yr_built={median_yr_built}  rooms={median_rooms}  modal_beds={modal_beds}")
                 return {
                     "median_home_value": median_home_value,

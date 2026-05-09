@@ -38,11 +38,11 @@ def _mock_urlopen(responses: dict):
     return _side_effect
 
 
-# Dummy Census ACS tract response: yr_built=1985, rooms=6, 2BR=100 3BR=500 4BR=300
+# Dummy Census ACS tract response: yr_built=1985, rooms=6, 1BR=100 2BR=200 3BR=500 4BR=300
 TRACT_ACS_RESPONSE = json.dumps([
-    ["B25035_001E", "B25018_001E", "B25041_002E", "B25041_003E", "B25041_004E", "B25041_005E",
+    ["B25035_001E", "B25018_001E", "B25041_003E", "B25041_004E", "B25041_005E", "B25041_006E",
      "B25077_001E", "B19013_001E", "state", "county", "tract"],
-    ["1985", "6.2", "100", "500", "300", "50", "350000", "80000", "12", "031", "016801"]
+    ["1985", "6.2", "100", "200", "500", "300", "350000", "80000", "12", "031", "016801"]
 ]).encode()
 
 # Dummy FCC block response
@@ -59,11 +59,11 @@ NOMINATIM_RESPONSE = json.dumps([
     {"lat": "30.1674", "lon": "-81.6317", "display_name": "11398 San Jose Blvd, Jacksonville, FL"}
 ]).encode()
 
-# Dummy ZIP ACS response
+# Dummy ZIP ACS response: 1BR=100 2BR=200 3BR=600 4BR=400
 ZIP_ACS_RESPONSE = json.dumps([
     ["B25077_001E", "B19013_001E", "B25035_001E", "B25018_001E",
-     "B25041_003E", "B25041_004E", "B25041_005E", "zip code tabulation area"],
-    ["310000", "75000", "1978", "5", "400", "600", "200", "32223"]
+     "B25041_003E", "B25041_004E", "B25041_005E", "B25041_006E", "zip code tabulation area"],
+    ["310000", "75000", "1978", "5", "100", "200", "600", "400", "32223"]
 ]).encode()
 
 
@@ -113,7 +113,7 @@ class TestCensusAcsByTract:
         assert result["median_rooms"] == 6  # round(6.2)
 
     def test_modal_beds_is_3_for_3br_majority(self):
-        # 3BR count (500) is highest
+        # 3BR count (500, field _005E) is highest → modal_beds = 3
         result = self._call()
         assert result["modal_beds"] == 3
 
@@ -144,9 +144,9 @@ class TestCensusAcsByZip:
         assert result["median_yr_built"] == 1978
 
     def test_returns_modal_beds(self):
-        # 3BR=400, 4BR=600, 5BR=200 → modal is 4
+        # 3BR=600 (field _005E) is highest → modal_beds = 3
         result = self._call()
-        assert result["modal_beds"] == 4
+        assert result["modal_beds"] == 3
 
     def test_returns_none_values_on_network_error(self):
         with patch("urllib.request.urlopen", side_effect=Exception("timeout")):
