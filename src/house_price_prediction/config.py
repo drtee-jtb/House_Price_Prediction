@@ -1,6 +1,6 @@
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -66,7 +66,7 @@ def load_settings() -> Settings:
     return Settings(
         raw_data_path=Path(
             os.getenv("RAW_DATA_PATH", "data/raw/housing.csv")),
-        target_column=os.getenv("TARGET_COLUMN", "PRICE"),
+        target_column=os.getenv("TARGET_COLUMN", "SalePrice"),
         model_path=Path(
             os.getenv("MODEL_PATH", "models/house_price_model.pkl")),
         model_type=os.getenv("MODEL_TYPE", "lightgbm").strip().lower(),

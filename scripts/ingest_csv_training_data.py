@@ -295,12 +295,15 @@ def _map_kc_row(row: pd.Series, min_price: float, max_bedrooms: int) -> dict[str
         sqft_living = int(row["sqft_living"])
         sqft_lot = int(row["sqft_lot"])
         sqft_above = int(row.get("sqft_above", sqft_living))
+        sqft_basement = int(row.get("sqft_basement", 0) or 0)
         grade = int(row["grade"])
         condition = int(row["condition"])
         bathrooms = float(row["bathrooms"])
         floors = float(row["floors"])
         yr_built = int(row["yr_built"])
         yr_renovated = int(row.get("yr_renovated", 0))
+        waterfront = int(row.get("waterfront", 0) or 0)
+        view = int(row.get("view", 0) or 0)
         zipcode = str(int(row["zipcode"]))
         lat = float(row["lat"])
         lon = float(row["long"])
@@ -345,6 +348,7 @@ def _map_kc_row(row: pd.Series, min_price: float, max_bedrooms: int) -> dict[str
         "YearBuilt": yr_built,
         "YearRemodAdd": year_remod,
         "GrLivArea": sqft_living,
+        "BasementSF": sqft_basement,
         "FullBath": full_bath,
         "HalfBath": half_bath,
         "BedroomAbvGr": bedrooms,
@@ -352,6 +356,8 @@ def _map_kc_row(row: pd.Series, min_price: float, max_bedrooms: int) -> dict[str
         "Fireplaces": fireplaces,
         "GarageCars": garage_cars,
         "GarageArea": garage_area,
+        "Waterfront": waterfront,
+        "ViewScore": view,
         "PropertyType": property_type,
         "HouseStyle": house_style,
         "NeighborhoodScore": None,   # filled in after KNN fitting
