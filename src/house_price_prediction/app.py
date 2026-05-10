@@ -434,6 +434,7 @@ async def normalize_address(request: NormalizeAddressRequest):
     geocode_query = request.full_address if request.full_address else full_address
 
     lat, lon, display = None, None, geocode_query
+    geocoding_source = None
     try:
         import urllib.request
         import json as _json
@@ -452,6 +453,7 @@ async def normalize_address(request: NormalizeAddressRequest):
             lat = float(coords["y"])
             lon = float(coords["x"])
             display = matches[0].get("matchedAddress", geocode_query)
+            geocoding_source = "Census"
     except Exception:
         pass
 
@@ -469,10 +471,9 @@ async def normalize_address(request: NormalizeAddressRequest):
                 lat = float(results[0]["lat"])
                 lon = float(results[0]["lon"])
                 display = results[0].get("display_name", geocode_query)
+                geocoding_source = "Nominatim"
         except Exception:
             pass
-
-    geocoding_source = "Census" if lat is not None else None
 
     return {
         "normalized_address_id": str(uuid.uuid4()),
