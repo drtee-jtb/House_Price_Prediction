@@ -3,7 +3,7 @@ services:
     name: house-price-api
     runtime: python
     buildCommand: pip install -r requirements.txt && RAW_DATA_PATH=data/processed/csv_training_data.jsonl python scripts/train.py
-    startCommand: uvicorn src.house_price_prediction.api.main:app --host 0.0.0.0 --port $PORT
+    startCommand: alembic upgrade head && uvicorn src.house_price_prediction.api.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: APP_ENV
         value: production
