@@ -2,7 +2,7 @@ services:
   - type: web
     name: house-price-api
     runtime: python
-    buildCommand: pip install -r requirements.txt && pip install -e . && RAW_DATA_PATH=data/processed/csv_training_data.jsonl python scripts/train.py
+    buildCommand: pip install -r requirements.txt && pip install -e .
     startCommand: alembic upgrade head && uvicorn house_price_prediction.api.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: APP_ENV
@@ -14,7 +14,7 @@ services:
       - key: DATABASE_URL
         value: sqlite:///data/processed/house_price_prediction.db
       - key: MODEL_PATH
-        value: models/house_price_model.joblib
+        value: models/nationwide_smart_router.pkl
       - key: ENABLE_MOCK_PREDICTOR
         value: "false"
       - key: GEOCODING_PROVIDER
