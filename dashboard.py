@@ -173,43 +173,101 @@ st.markdown("""
 # Load data using the trained model's data pipeline
 @st.cache_data
 def load_data():
-    import os
-    import sys
-    from pathlib import Path
     from src.house_price_prediction.data import load_dataset
     from src.house_price_prediction.config import load_settings
-    
+
     # Load using the same settings as training
     settings = load_settings()
     df = load_dataset(settings.raw_data_path)
-    return df
+    return _prepare_dashboard_dataset(df)
+
+
+def _prepare_dashboard_dataset(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize common training schemas to the dashboard's expected columns."""
+    normalized = df.copy()
+
+    rename_map = {
+        "SalePrice": "price",
+        "GrLivArea": "sqft_living",
+        "LotArea": "sqft_lot",
+        "BedroomAbvGr": "bedrooms",
+        "YearBuilt": "yr_built",
+        "OverallQual": "grade",
+        "OverallCond": "condition",
+    }
+
+    for source_col, target_col in rename_map.items():
+        if target_col not in normalized.columns and source_col in normalized.columns:
+            normalized[target_col] = normalized[source_col]
+
+    if "bathrooms" not in normalized.columns:
+        full_bath = pd.to_numeric(normalized.get("FullBath"), errors="coerce") if "FullBath" in normalized.columns else None
+        half_bath = pd.to_numeric(normalized.get("HalfBath"), errors="coerce") if "HalfBath" in normalized.columns else None
+        if full_bath is not None:
+            normalized["bathrooms"] = full_bath.fillna(0) + (half_bath.fillna(0) * 0.5 if half_bath is not None else 0)
+
+    if "floors" not in normalized.columns:
+        if "FloorCount" in normalized.columns:
+            normalized["floors"] = pd.to_numeric(normalized["FloorCount"], errors="coerce")
+        else:
+            normalized["floors"] = 1.0
+
+    for required in [
+        "price",
+        "sqft_lot",
+        "grade",
+        "condition",
+        "sqft_living",
+        "bathrooms",
+        "bedrooms",
+        "floors",
+        "yr_built",
+    ]:
+        if required not in normalized.columns:
+            normalized[required] = np.nan
+
+    return normalized
 
 # Load trained model from pickle/joblib file
 @st.cache_resource
 def load_trained_model():
-    """Load the most recently modified model artifact (.pkl or .joblib) from the models directory."""
+    """Load configured model artifact first, then fall back to latest model file."""
     from pathlib import Path
+    from src.house_price_prediction.config import load_settings
     from src.house_price_prediction.model import load_model_artifact
 
     models_dir = Path(__file__).parent / "models"
-    candidates = list(models_dir.glob("*.pkl")) + list(models_dir.glob("*.joblib"))
+    settings = load_settings()
+    configured_model_path = Path(settings.model_path)
+
+    candidates: list[Path] = []
+    if configured_model_path.exists() and configured_model_path.is_file():
+        candidates.append(configured_model_path)
+
+    latest_candidates = list(models_dir.glob("*.pkl")) + list(models_dir.glob("*.joblib"))
+    latest_candidates = sorted(latest_candidates, key=lambda p: p.stat().st_mtime, reverse=True)
+    for candidate in latest_candidates:
+        if candidate not in candidates:
+            candidates.append(candidate)
 
     if not candidates:
         st.warning(f"⚠️ No model files found in {models_dir}")
-        return None
+        return None, None
 
-    model_path = max(candidates, key=lambda p: p.stat().st_mtime)
+    load_error: Exception | None = None
+    for model_path in candidates:
+        try:
+            artifact = load_model_artifact(model_path)
+            st.sidebar.info(f"Model loaded: {model_path.name}")
+            return artifact, model_path
+        except Exception as e:
+            load_error = e
 
-    try:
-        artifact = load_model_artifact(model_path)
-        st.sidebar.info(f"Model loaded: `{model_path.name}`")
-        return artifact
-    except Exception as e:
-        st.error(f"Error loading model: {e}")
-        return None
+    st.error(f"Error loading model: {load_error}")
+    return None, None
 
 df = load_data()
-model_artifact = load_trained_model()
+model_artifact, loaded_model_path = load_trained_model()
 
 # Human-readable labels for the model feature names most relevant to home buyers.
 _KEY_FEATURE_LABELS: dict[str, str] = {
@@ -224,6 +282,188 @@ _KEY_FEATURE_LABELS: dict[str, str] = {
     "GarageCars": "Garage Cars",
     "OverallQual": "Overall Quality",
 }
+
+_LIVE_PROPERTY_FEATURE_KEYS: tuple[str, ...] = (
+    "BedroomAbvGr",
+    "FullBath",
+    "HalfBath",
+    "GrLivArea",
+    "LotArea",
+    "YearBuilt",
+    "GarageCars",
+    "GarageArea",
+    "TotRmsAbvGrd",
+    "OverallQual",
+    "OverallCond",
+    "HouseStyle",
+    "PropertyType",
+)
+
+_CONTEXT_FEATURE_KEYS: tuple[str, ...] = (
+    "Neighborhood",
+    "NeighborhoodScore",
+    "CensusMedianValue",
+    "MedianIncomeK",
+    "OwnerOccupiedRate",
+)
+
+_SOURCE_UI_METADATA: dict[str, tuple[str, str, float]] = {
+    "true_api": (
+        "Live API",
+        "Live property facts from the property data provider.",
+        0.06,
+    ),
+    "census_context": ("Census-backed", "Best available free-data enrichment.", 0.10),
+    "census_context_with_backfill": (
+        "Census + backfill",
+        "Mixed live enrichment with fallback support.",
+        0.14,
+    ),
+    "heuristic": ("Heuristic fallback", "Estimated from fallback rules after provider gaps.", 0.18),
+    "fake": ("Synthetic test data", "Useful for testing only, not market interpretation.", 0.30),
+}
+
+
+def _format_currency(val: float | int | None) -> str:
+    return f"${val:,.0f}" if val is not None else "N/A"
+
+
+def _format_pct(val: float | None) -> str:
+    return f"{val:.1%}" if val is not None else "N/A"
+
+
+def _format_num(val: float | int | None, decimals: int = 1) -> str:
+    return f"{val:,.{decimals}f}" if val is not None else "N/A"
+
+
+def _extract_prediction_features(prediction: dict | None) -> dict:
+    if not prediction:
+        return {}
+    features = prediction.get("exact_house_features")
+    return features if isinstance(features, dict) else {}
+
+
+def _prediction_feature_count(prediction: dict | None) -> int:
+    features = _extract_prediction_features(prediction)
+    if features:
+        return len(features)
+    key_features = prediction.get("key_features") if isinstance(prediction, dict) else None
+    return len(key_features) if isinstance(key_features, dict) else 0
+
+
+def _get_source_ui_metadata(feature_source: str | None) -> tuple[str, str, float]:
+    return _SOURCE_UI_METADATA.get(
+        (feature_source or "").strip().lower(),
+        (feature_source or "Unknown source", "Source metadata unavailable.", 0.16),
+    )
+
+
+def _format_feature_metric_value(feature_name: str, feature_value):
+    if feature_value is None:
+        return "N/A"
+    if feature_name in {"GrLivArea", "LotArea", "GarageArea"} and isinstance(feature_value, (int, float)):
+        return f"{feature_value:,.0f}"
+    if feature_name in {"OverallQual", "OverallCond"} and isinstance(feature_value, (int, float)):
+        return f"{feature_value:.0f}/10"
+    if feature_name in {"NeighborhoodScore"} and isinstance(feature_value, (int, float)):
+        return f"{feature_value:.0f}/100"
+    if feature_name in {"OwnerOccupiedRate", "census_owner_occupancy_rate", "census_rent_burden_pct"} and isinstance(feature_value, (int, float)):
+        return f"{feature_value:.1%}"
+    if isinstance(feature_value, float):
+        if feature_value.is_integer():
+            return f"{int(feature_value)}"
+        return f"{feature_value:.2f}"
+    if feature_name == "PropertyType" and isinstance(feature_value, str):
+        return feature_value.replace("_", " ").title()
+    return str(feature_value)
+
+
+def _extract_feature_subset(features: dict | None, keys: tuple[str, ...]) -> dict[str, object]:
+    if not isinstance(features, dict):
+        return {}
+    return {
+        key: features[key]
+        for key in keys
+        if features.get(key) is not None
+    }
+
+
+def render_feature_badges(
+    features: dict,
+    *,
+    title: str,
+    badge_text: str,
+    accent: str,
+) -> None:
+    entries = [
+        (name, value)
+        for name, value in features.items()
+        if value is not None
+    ]
+    if not entries:
+        return
+
+    st.markdown(f"**{title}**")
+    cols = st.columns(min(len(entries), 4))
+    for index, (feature_name, feature_value) in enumerate(entries):
+        label = _KEY_FEATURE_LABELS.get(feature_name, feature_name)
+        value = _format_feature_metric_value(feature_name, feature_value)
+        cols[index % 4].markdown(
+            f"""
+            <div style="
+                background: rgba(255,255,255,0.72);
+                border: 1px solid rgba(31,111,235,0.14);
+                border-left: 4px solid {accent};
+                border-radius: 14px;
+                padding: 12px 14px;
+                min-height: 108px;
+                box-shadow: 0 10px 24px rgba(15,23,42,0.08);
+                margin-bottom: 10px;
+            ">
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
+                    <div style="font-size:0.88rem; color:#1f2937; font-weight:600;">{label}</div>
+                    <span style="
+                        background:{accent};
+                        color:white;
+                        border-radius:999px;
+                        padding:3px 8px;
+                        font-size:0.72rem;
+                        font-weight:700;
+                        letter-spacing:0.02em;
+                    ">{badge_text}</span>
+                </div>
+                <div style="font-size:1.5rem; font-weight:800; color:#111827; line-height:1.2;">{value}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def render_context_summary_metrics(inferred_features: dict) -> None:
+    summary_items: list[tuple[str, str]] = []
+
+    census_value = inferred_features.get("CensusMedianValue") if isinstance(inferred_features, dict) else None
+    if isinstance(census_value, (int, float)) and census_value > 0:
+        summary_items.append(("Census Median", _format_currency(census_value)))
+
+    median_income_k = inferred_features.get("MedianIncomeK") if isinstance(inferred_features, dict) else None
+    if isinstance(median_income_k, (int, float)) and median_income_k > 0:
+        summary_items.append(("Median Income", _format_currency(median_income_k * 1000)))
+
+    owner_rate = inferred_features.get("OwnerOccupiedRate") if isinstance(inferred_features, dict) else None
+    if isinstance(owner_rate, (int, float)) and owner_rate > 0:
+        summary_items.append(("Owner Occupancy", _format_pct(owner_rate)))
+
+    if isinstance(inferred_features, dict) and inferred_features:
+        summary_items.append(("Feature Count", str(len(inferred_features))))
+
+    if not summary_items:
+        st.caption("Market context is limited for this property. Live property facts are still shown above.")
+        return
+
+    cols = st.columns(min(len(summary_items), 4))
+    for index, (label, value) in enumerate(summary_items):
+        cols[index % 4].metric(label, value)
 
 
 def render_key_features(kf: dict, title: str = "Key Property Features") -> None:
@@ -333,13 +573,14 @@ def render_prediction_result(slot_index: int) -> None:
         if prediction.get("predicted_price") is not None:
             st.metric("Predicted Price", f"${prediction['predicted_price']:,.0f}")
 
-        key_features = prediction.get("feature_snapshot", {}).get("features", {})
-        if key_features:
-            st.markdown("**Key Property Features:**")
-            feat_cols = st.columns(min(len(key_features), 4))
-            for idx, (feat_name, feat_val) in enumerate(list(key_features.items())[:4]):
-                with feat_cols[idx % 4]:
-                    st.metric(feat_name, feat_val)
+        exact_features = prediction.get("exact_house_features") or {}
+        source_label, source_note, _ = _get_source_ui_metadata(prediction.get("feature_source"))
+        st.caption(f"Data Source: {source_label}")
+        st.caption(source_note)
+        if exact_features:
+            render_key_features(exact_features, title="Caller-supplied facts")
+        else:
+            st.caption("No exact property facts are available for this prediction. Inferred model inputs are not shown as facts.")
     elif prediction_error:
         st.error(prediction_error.get("message", "Prediction failed"))
         detail = prediction_error.get("detail")
@@ -661,23 +902,84 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                         value=st.session_state.get(lookup_state_key(slot_index, "country"), "US"),
                     )
 
-            # ── Property details ──────────────────────────────────────────
-            with st.expander("🏠 Property Details (fill in for accurate prediction)", expanded=True):
-                pc1, pc2, pc3, pc4 = st.columns(4)
-                with pc1:
-                    st.number_input("Bedrooms", min_value=0, max_value=20, value=3,
-                                    key=lookup_state_key(slot_index, "p_bedrooms"))
-                with pc2:
-                    st.number_input("Bathrooms", min_value=0.0, max_value=10.0, value=2.25, step=0.25,
-                                    key=lookup_state_key(slot_index, "p_bathrooms"))
-                with pc3:
-                    st.number_input("Living Area (sqft)", min_value=100, max_value=30000, value=2079,
-                                    key=lookup_state_key(slot_index, "p_sqft_living"))
-                with pc4:
-                    st.number_input("Lot Area (sqft)", min_value=100, max_value=2000000, value=7618,
-                                    key=lookup_state_key(slot_index, "p_sqft_lot"))
+            # ── Property details (Optional Override) ──────────────────────
+            # Presentation mode: paste exact listing facts when a paid parcel API is unavailable.
+            with st.expander("📌 Use Exact Listing Facts (optional)", expanded=False):
+                st.caption("For demos without paid API access: enter listing facts exactly as shown (beds/baths/sqft/lot/year/garage).")
+                ov1, ov2, ov3, ov4 = st.columns(4)
+                with ov1:
+                    st.number_input(
+                        "Bedrooms",
+                        min_value=-1,
+                        max_value=20,
+                        value=-1,
+                        key=lookup_state_key(slot_index, "p_bedrooms"),
+                        help="-1 keeps provider value. Use listing value to force exact facts.",
+                    )
+                with ov2:
+                    st.number_input(
+                        "Bathrooms",
+                        min_value=-1.0,
+                        max_value=20.0,
+                        value=-1.0,
+                        step=0.25,
+                        key=lookup_state_key(slot_index, "p_bathrooms"),
+                        help="Decimal values supported (e.g., 3.5).",
+                    )
+                with ov3:
+                    st.number_input(
+                        "Living Area (sqft)",
+                        min_value=-1,
+                        max_value=50000,
+                        value=-1,
+                        key=lookup_state_key(slot_index, "p_sqft_living"),
+                    )
+                with ov4:
+                    st.number_input(
+                        "Lot Area (sqft)",
+                        min_value=-1,
+                        max_value=2000000,
+                        value=-1,
+                        key=lookup_state_key(slot_index, "p_sqft_lot"),
+                    )
 
-            search_submitted = st.form_submit_button("🔍 Search & Predict Price", use_container_width=True)
+                ov5, ov6, ov7, ov8 = st.columns(4)
+                with ov5:
+                    st.number_input(
+                        "Lot Area (acres)",
+                        min_value=-1.0,
+                        max_value=1000.0,
+                        value=-1.0,
+                        step=0.1,
+                        key=lookup_state_key(slot_index, "p_lot_acres"),
+                        help="Used only if Lot Area (sqft) is not set.",
+                    )
+                with ov6:
+                    st.number_input(
+                        "Year Built",
+                        min_value=-1,
+                        max_value=2030,
+                        value=-1,
+                        key=lookup_state_key(slot_index, "p_year_built"),
+                    )
+                with ov7:
+                    st.number_input(
+                        "Garage Spaces",
+                        min_value=-1,
+                        max_value=20,
+                        value=-1,
+                        key=lookup_state_key(slot_index, "p_garage_cars"),
+                    )
+                with ov8:
+                    st.number_input(
+                        "Total Rooms",
+                        min_value=-1,
+                        max_value=30,
+                        value=-1,
+                        key=lookup_state_key(slot_index, "p_total_rooms"),
+                    )
+
+            search_submitted = st.form_submit_button("🔍 Find & Predict Price", use_container_width=True)
 
         if search_submitted:
             full_addr_raw  = st.session_state.get(lookup_state_key(slot_index, "full_addr"), "").strip()
@@ -701,17 +1003,21 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                 else:
                     line1, city, state, postal = manual_line1, manual_city, manual_state, manual_postal
 
-                # Build payload — always send full_address for maximum geocoding accuracy
+                # Build a payload that matches the backend's structured address contract
                 address_parts = [p for p in [line1, manual_line2, city, f"{state} {postal}".strip()] if p]
                 canonical_full = full_addr_raw or ", ".join(address_parts)
 
-                lookup_payload = {"full_address": canonical_full, "country": manual_country or "US"}
-                # Also send structured fields when available (backend uses whichever is more complete)
+                lookup_payload = {"country": manual_country or "US"}
                 if line1:   lookup_payload["address_line_1"] = line1
                 if city:    lookup_payload["city"]           = city
                 if state:   lookup_payload["state"]          = state
                 if postal:  lookup_payload["postal_code"]    = postal
                 if manual_line2: lookup_payload["address_line_2"] = manual_line2
+
+                # If parsing did not produce structured fields, fall back to the user's full text
+                # as address_line_1 so the API contract remains valid.
+                if not lookup_payload.get("address_line_1"):
+                    lookup_payload["address_line_1"] = canonical_full
 
                 with st.spinner(f"🌍 Looking up address for {slot_label.lower()}..."):
                     sc, body, _url = call_api("POST", api_base_url, "/v1/properties/normalize", payload=lookup_payload)
@@ -724,22 +1030,49 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                     st.session_state.pop(f"local_fallback_{slot_index}", None)
                     st.session_state.pop(f"local_prediction_{slot_index}", None)
                     st.success("✅ Address found!")
-                    # Auto-trigger prediction immediately
-                    formatted = body.get("formatted_address") or body.get("address_line_1", "")
+                    # Auto-trigger prediction immediately with real data (no hardcoded defaults)
                     pred_payload = {
-                        "full_address": formatted,
                         "address_line_1": body.get("address_line_1"),
                         "city": body.get("city"),
                         "state": body.get("state"),
                         "postal_code": body.get("postal_code"),
                         "country": body.get("country"),
-                        "bedrooms":    st.session_state.get(lookup_state_key(slot_index, "p_bedrooms")),
-                        "bathrooms":   st.session_state.get(lookup_state_key(slot_index, "p_bathrooms")),
-                        "sqft_living": st.session_state.get(lookup_state_key(slot_index, "p_sqft_living")),
-                        "sqft_lot":    st.session_state.get(lookup_state_key(slot_index, "p_sqft_lot")),
                     }
                     if body.get("address_line_2"):
                         pred_payload["address_line_2"] = body.get("address_line_2")
+                    
+                    # Only add feature overrides if explicitly set (>= 0)
+                    feature_overrides = {}
+                    if st.session_state.get(lookup_state_key(slot_index, "p_bedrooms"), -1) >= 0:
+                        feature_overrides["BedroomAbvGr"] = st.session_state.get(lookup_state_key(slot_index, "p_bedrooms"))
+                    if st.session_state.get(lookup_state_key(slot_index, "p_bathrooms"), -1.0) >= 0:
+                        baths = float(st.session_state.get(lookup_state_key(slot_index, "p_bathrooms"), 0.0))
+                        full_bath = int(baths)
+                        half_bath = 1 if (baths - full_bath) >= 0.5 else 0
+                        feature_overrides["FullBath"] = full_bath
+                        feature_overrides["HalfBath"] = half_bath
+                    if st.session_state.get(lookup_state_key(slot_index, "p_sqft_living"), -1) >= 100:
+                        feature_overrides["GrLivArea"] = st.session_state.get(lookup_state_key(slot_index, "p_sqft_living"))
+                    lot_sqft = st.session_state.get(lookup_state_key(slot_index, "p_sqft_lot"), -1)
+                    lot_acres = st.session_state.get(lookup_state_key(slot_index, "p_lot_acres"), -1.0)
+                    if lot_sqft >= 100:
+                        feature_overrides["LotArea"] = lot_sqft
+                    elif lot_acres > 0:
+                        feature_overrides["LotArea"] = int(round(float(lot_acres) * 43560))
+                    if st.session_state.get(lookup_state_key(slot_index, "p_year_built"), -1) >= 1800:
+                        year_built = int(st.session_state.get(lookup_state_key(slot_index, "p_year_built")))
+                        feature_overrides["YearBuilt"] = year_built
+                        feature_overrides["YearRemodAdd"] = year_built
+                    if st.session_state.get(lookup_state_key(slot_index, "p_garage_cars"), -1) >= 0:
+                        garage_cars = int(st.session_state.get(lookup_state_key(slot_index, "p_garage_cars")))
+                        feature_overrides["GarageCars"] = garage_cars
+                        feature_overrides["GarageArea"] = garage_cars * 280
+                    if st.session_state.get(lookup_state_key(slot_index, "p_total_rooms"), -1) >= 1:
+                        feature_overrides["TotRmsAbvGrd"] = int(st.session_state.get(lookup_state_key(slot_index, "p_total_rooms")))
+                    
+                    if feature_overrides:
+                        pred_payload["feature_overrides"] = feature_overrides
+                    
                     with st.spinner(f"🧠 Predicting price for {slot_label.lower()}..."):
                         pred_sc, pred_body, _pred_url = call_api(
                             "POST", api_base_url, "/v1/predictions", payload=pred_payload
@@ -831,13 +1164,22 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
         if existing_prediction:
             price = existing_prediction.get("predicted_price")
             if price is not None:
+                feature_source = existing_prediction.get("feature_source")
+                source_label, source_note, _ = _get_source_ui_metadata(feature_source)
+                exact_features = _extract_prediction_features(existing_prediction)
+                inferred_features = existing_prediction.get("actual_house_features") if isinstance(existing_prediction.get("actual_house_features"), dict) else {}
+                relative_to_census = None
+                census_value = inferred_features.get("CensusMedianValue") if isinstance(inferred_features, dict) else None
+                if isinstance(census_value, (int, float)) and census_value > 0:
+                    relative_to_census = (price - census_value) / census_value
+
                 st.markdown(
                     f"""
-                    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    <div style="background: linear-gradient(135deg, #1f6feb 0%, #0f766e 100%);
                                 padding: 28px 32px; border-radius: 14px; margin: 12px 0 20px 0;
-                                text-align: center; box-shadow: 0 8px 30px rgba(102,126,234,0.4);">
+                                box-shadow: 0 8px 30px rgba(15,118,110,0.30);">
                         <p style="color: rgba(255,255,255,0.85); margin: 0 0 6px 0; font-size: 1rem; font-weight: 500;">
-                            Estimated House Price
+                            Estimated Market Price
                         </p>
                         <p style="color: white; margin: 0; font-size: 3rem; font-weight: 800; letter-spacing: 1px;">
                             ${price:,.0f}
@@ -846,6 +1188,75 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                     """,
                     unsafe_allow_html=True,
                 )
+
+                summary_cols = st.columns(3)
+                summary_cols[0].metric("Data Source", source_label)
+                summary_cols[1].metric("Vs Census Median", _format_pct(relative_to_census))
+                summary_cols[2].metric("Response Type", "Reused" if existing_prediction.get("was_reused") else "Fresh")
+                st.caption(source_note)
+
+                live_property_features = _extract_feature_subset(inferred_features, _LIVE_PROPERTY_FEATURE_KEYS)
+                context_features = _extract_feature_subset(inferred_features, _CONTEXT_FEATURE_KEYS)
+
+                st.markdown("**📋 Property Facts**")
+                if exact_features:
+                    render_feature_badges(
+                        exact_features,
+                        title="Caller-supplied facts",
+                        badge_text="Override",
+                        accent="#7c3aed",
+                    )
+                elif live_property_features:
+                    render_feature_badges(
+                        live_property_features,
+                        title="Live property facts",
+                        badge_text=source_label,
+                        accent="#0f766e",
+                    )
+                else:
+                    st.caption("No exact property facts were supplied for this prediction and no live property facts were returned.")
+
+                if context_features:
+                    render_feature_badges(
+                        context_features,
+                        title="Location and market context",
+                        badge_text="Context",
+                        accent="#1f6feb",
+                    )
+
+                render_context_summary_metrics(inferred_features)
+
+                with st.expander("🔍 Inferred Model Inputs & Data Provenance", expanded=False):
+                    detail_cols = st.columns(2)
+                    with detail_cols[0]:
+                        st.markdown("**Response metadata**")
+                        st.json({
+                            "model_name": existing_prediction.get("model_name"),
+                            "model_version": existing_prediction.get("model_version"),
+                            "feature_source": existing_prediction.get("feature_source"),
+                            "was_reused": existing_prediction.get("was_reused"),
+                            "generated_at": existing_prediction.get("generated_at"),
+                            "selected_feature_policy_name": existing_prediction.get("selected_feature_policy_name"),
+                        })
+                    with detail_cols[1]:
+                        st.markdown("**Feature provenance**")
+                        st.json(existing_prediction.get("feature_provenance") or {"note": "No provenance metadata returned."})
+
+                    if inferred_features:
+                        st.markdown("**Inferred model inputs**")
+                        pretty_features = {
+                            _KEY_FEATURE_LABELS.get(name, name): _format_feature_metric_value(name, value)
+                            for name, value in sorted(inferred_features.items())
+                        }
+                        st.json(pretty_features)
+                    elif exact_features:
+                        st.markdown("**Exact property facts**")
+                        pretty_features = {
+                            _KEY_FEATURE_LABELS.get(name, name): _format_feature_metric_value(name, value)
+                            for name, value in sorted(exact_features.items())
+                        }
+                        st.json(pretty_features)
+
         prediction_error = st.session_state.get(prediction_error_key)
         if prediction_error:
             st.error(prediction_error["message"])
@@ -858,7 +1269,11 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
 
 
         # ── Market context (shown below the prediction) ────────────────────
-        with st.expander("📊 Dataset Market Context", expanded=False):
+        with st.expander("📊 Dataset Reference Averages (Not This Property)", expanded=False):
+            st.caption(
+                "These values are dataset-level averages for orientation only. "
+                "They are not the exact features used for this individual property prediction."
+            )
             metrics = calculate_market_metrics(df)
             render_market_metrics(metrics)
         return normalized
@@ -942,7 +1357,8 @@ if page == "Overview":
     
     # Model Status
     if model_artifact:
-        st.success("✅ **Trained Model Loaded** from `models/house_price_model.pkl`")
+        loaded_model_display = str(loaded_model_path) if loaded_model_path is not None else "configured model"
+        st.success(f"✅ **Trained Model Loaded** from {loaded_model_display}")
         col_meta1, col_meta2, col_meta3 = st.columns(3)
         with col_meta1:
             st.metric("Model Name", model_artifact.metadata.model_name or "Random Forest")
@@ -1035,32 +1451,17 @@ elif page == "Address Lookup":
         st.markdown("---")
         st.markdown("## 🏘️ Neighborhood Statistics Comparison")
 
-        feat_0 = pred_0.get("feature_snapshot", {}).get("features", {})
-        feat_1 = pred_1.get("feature_snapshot", {}).get("features", {})
+        feat_0 = _extract_prediction_features(pred_0)
+        feat_1 = _extract_prediction_features(pred_1)
 
         addr_0 = (norm_0 or {}).get("formatted_address") or (norm_0 or {}).get("address_line_1", "Address 1")
         addr_1 = (norm_1 or {}).get("formatted_address") or (norm_1 or {}).get("address_line_1", "Address 2")
 
-        def _fmt_currency(val):
-            return f"${val:,.0f}" if val is not None else "N/A"
-
-        def _fmt_pct(val):
-            return f"{val:.1%}" if val is not None else "N/A"
-
-        def _fmt_num(val, decimals=1):
-            return f"{val:,.{decimals}f}" if val is not None else "N/A"
-
         rows = [
-            ("Neighborhood",         feat_0.get("Neighborhood"),                           feat_1.get("Neighborhood")),
-            ("Predicted Price",       _fmt_currency(pred_0.get("predicted_price")),          _fmt_currency(pred_1.get("predicted_price"))),
-            ("Neighborhood Score",    _fmt_num(feat_0.get("NeighborhoodScore")),              _fmt_num(feat_1.get("NeighborhoodScore"))),
-            ("Median Home Value",     _fmt_currency(feat_0.get("CensusMedianValue")),         _fmt_currency(feat_1.get("CensusMedianValue"))),
-            ("Median Income",         _fmt_currency((feat_0.get("MedianIncomeK") or 0) * 1000) if feat_0.get("MedianIncomeK") else "N/A",
-                                      _fmt_currency((feat_1.get("MedianIncomeK") or 0) * 1000) if feat_1.get("MedianIncomeK") else "N/A"),
-            ("Median Rent",           _fmt_currency(feat_0.get("census_median_rent")),        _fmt_currency(feat_1.get("census_median_rent"))),
-            ("Owner Occupancy Rate",  _fmt_pct(feat_0.get("OwnerOccupiedRate")),              _fmt_pct(feat_1.get("OwnerOccupiedRate"))),
-            ("Rent Burden %",         _fmt_pct(feat_0.get("census_rent_burden_pct")),         _fmt_pct(feat_1.get("census_rent_burden_pct"))),
-            ("Tract Population",      _fmt_num(feat_0.get("census_tract_population"), 0),     _fmt_num(feat_1.get("census_tract_population"), 0)),
+            ("Predicted Price", _format_currency(pred_0.get("predicted_price")), _format_currency(pred_1.get("predicted_price"))),
+            ("Data Source", _get_source_ui_metadata(pred_0.get("feature_source"))[0], _get_source_ui_metadata(pred_1.get("feature_source"))[0]),
+            ("Exact Facts", len(feat_0), len(feat_1)),
+            ("Response Type", "Reused" if pred_0.get("was_reused") else "Fresh", "Reused" if pred_1.get("was_reused") else "Fresh"),
         ]
 
         # Header row
@@ -1117,17 +1518,14 @@ elif page == "Live API Tester":
                 rows = []
                 for item in items:
                     addr = item.get("normalized_address", {})
-                    kf = item.get("key_features", {})
+                    exact_features = item.get("exact_house_features", {}) if isinstance(item.get("exact_house_features"), dict) else {}
+                    feature_count = len(exact_features)
+                    source_label, _, _ = _get_source_ui_metadata(item.get("feature_source"))
                     rows.append({
                         "Address": addr.get("formatted_address", "—"),
                         "Price (USD)": f"${item['predicted_price']:,.0f}",
-                        "Bedrooms": kf.get("BedroomAbvGr", "—"),
-                        "Living Area (sqft)": kf.get("GrLivArea", "—"),
-                        "Lot Area (sqft)": kf.get("LotArea", "—"),
-                        "Full Baths": kf.get("FullBath", "—"),
-                        "Year Built": kf.get("YearBuilt", "—"),
-                        "Garage Cars": kf.get("GarageCars", "—"),
-                        "Quality": kf.get("OverallQual", "—"),
+                        "Feature Source": source_label,
+                        "Exact Facts": feature_count,
                         "Reused": "✓" if item.get("was_reused") else "",
                     })
                 st.subheader("Recent Predictions")
@@ -1223,8 +1621,9 @@ elif page == "Live API Tester":
                     )
                     render_response("Live Validation • Create Prediction", pred_sc, pred_body, pred_url)
                     if pred_sc == 201 and isinstance(pred_body, dict):
-                        kf = pred_body.get("key_features", {})
-                        render_key_features(kf)
+                        kf = pred_body.get("exact_house_features", {})
+                        if kf:
+                            render_key_features(kf, title="Exact property facts")
 
                     prediction_id = pred_body.get("prediction_id") if isinstance(pred_body, dict) else None
                     if prediction_id:
@@ -1237,13 +1636,11 @@ elif page == "Live API Tester":
                         render_response("Live Validation • Prediction Detail", detail_sc, detail_body, detail_url)
 
                         if detail_sc == 200 and isinstance(detail_body, dict):
-                            # Render key features from the full feature snapshot if key_features
-                            # is not already present on the response (backward-compat guard).
-                            kf = detail_body.get("key_features") or {}
-                            if not kf:
-                                raw = detail_body.get("feature_snapshot", {}).get("features", {})
-                                kf = {k: raw[k] for k in _KEY_FEATURE_LABELS if raw.get(k) is not None}
-                            render_key_features(kf)
+                            kf = detail_body.get("exact_house_features") or {}
+                            if kf:
+                                render_key_features(kf, title="Exact property facts")
+                            else:
+                                st.info("No exact property facts are available for this prediction.")
                             provider_responses = detail_body.get("provider_responses", [])
                             if provider_responses:
                                 latest_provider = provider_responses[-1]
@@ -1367,12 +1764,12 @@ elif page == "Live API Tester":
                             if r.get("completeness_score") is not None
                             else "—"
                         ),
-                        "Beds": kfv.get("BedroomAbvGr", "—"),
-                        "Rooms": kfv.get("TotRmsAbvGrd", "—"),
-                        "Living sqft": kfv.get("GrLivArea", "—"),
-                        "Lot sqft": kfv.get("LotArea", "—"),
-                        "Full Baths": kfv.get("FullBath", "—"),
-                        "Year Built": kfv.get("YearBuilt", "—"),
+                        "Inferred Beds": kfv.get("BedroomAbvGr", "—"),
+                        "Inferred Rooms": kfv.get("TotRmsAbvGrd", "—"),
+                        "Inferred Living sqft": kfv.get("GrLivArea", "—"),
+                        "Inferred Lot sqft": kfv.get("LotArea", "—"),
+                        "Inferred Full Baths": kfv.get("FullBath", "—"),
+                        "Inferred Year Built": kfv.get("YearBuilt", "—"),
                         "Issues": "; ".join(r.get("issues", [])) or "—",
                         "Error": r.get("error_message") or "",
                     })
@@ -1465,7 +1862,9 @@ elif page == "Live API Tester":
                     st.session_state["last_prediction_id"] = body["prediction_id"]
                 render_response("Create Prediction Response", sc, body, url)
                 if sc == 201 and isinstance(body, dict):
-                    render_key_features(body.get("key_features", {}))
+                    exact_features = body.get("exact_house_features", {})
+                    if exact_features:
+                        render_key_features(exact_features, title="Exact property facts")
 
         if st.button("Generate Address Baseline", use_container_width=True, key="adhoc_baseline"):
             bl_payload = dict(adhoc_payload)
@@ -1478,7 +1877,8 @@ elif page == "Live API Tester":
                 # filter them out so render_key_features shows only populated entries.
                 raw_kfv = body.get("features", {}).get("key_feature_values", {})
                 kfv = {k: v for k, v in (raw_kfv or {}).items() if v is not None}
-                render_key_features(kfv)
+                if kfv:
+                    render_key_features(kfv, title="Inferred model inputs")
                 assessment = body.get("assessment", {})
                 checks = assessment.get("checks", []) if isinstance(assessment, dict) else []
                 if checks:
@@ -1583,11 +1983,11 @@ elif page == "Live API Tester":
             sc, body, url = call_api("GET", api_base_url, f"/v1/predictions/{prediction_id_input.strip()}")
             render_response("Prediction Detail", sc, body, url)
             if sc == 200 and isinstance(body, dict):
-                kf = body.get("key_features") or {}
+                kf = body.get("exact_house_features") or {}
                 if not kf:
-                    raw = body.get("feature_snapshot", {}).get("features", {})
-                    kf = {k: raw[k] for k in _KEY_FEATURE_LABELS if raw.get(k) is not None}
-                render_key_features(kf)
+                    st.info("No exact property facts are available for this prediction.")
+                else:
+                    render_key_features(kf, title="Exact property facts")
     with drill_col2:
         if st.button("Get Trace", use_container_width=True, disabled=not prediction_id_input.strip()):
             sc, body, url = call_api("GET", api_base_url, f"/v1/predictions/{prediction_id_input.strip()}/trace")

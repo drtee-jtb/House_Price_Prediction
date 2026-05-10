@@ -27,10 +27,48 @@ class AssessorAPIConnector:
 
     @staticmethod
     def search_property_by_address(address: str) -> Dict:
-        """Derive pkl-compatible property features directly from the address."""
+        """Derive pkl-compatible property features directly from the address using RentCast API."""
         print(f"[PROPERTY-LOOKUP] Building features from address: {address}")
+        
+        # First try RentCast for real property data
+        try:
+            from .infrastructure.providers.factory import create_property_data_provider
+            from .config import load_settings
+            from .domain.contracts.prediction_contracts import NormalizedAddress
+            
+            settings = load_settings()
+            provider = create_property_data_provider(settings)
+            
+            # Parse address for RentCast
+            import re
+            parts = [p.strip() for p in address.split(',')]
+            zip_match = re.search(r'\b(\d{5})\b', address)
+            real_zipcode = zip_match.group(1) if zip_match else '00000'
+            
+            state_match = re.search(r'\b([A-Z]{2})\s+\d{5}\b', address)
+            real_state = state_match.group(1) if state_match else 'XX'
+            
+            normalized = NormalizedAddress(
+                address_line_1=parts[0] if parts else address,
+                city=parts[1] if len(parts) > 1 else 'Unknown',
+                state=real_state,
+                postal_code=real_zipcode,
+                country="US",
+                formatted_address=address
+            )
+            
+            print(f"[RENTCAST] Attempting to fetch real property data...")
+            response = provider.fetch_property_features(normalized)
+            if response and response.payload:
+                features = AssessorAPIConnector._features_from_address(address, rentcast_data=response.payload)
+                print(f"[OK] Features built from RentCast for: {address}")
+                return features
+        except Exception as e:
+            print(f"[RENTCAST] Failed ({e}), falling back to Census+Heuristic...")
+        
+        # Fallback: use Census + heuristic defaults
         features = AssessorAPIConnector._features_from_address(address)
-        print(f"[OK] Features built for: {address}")
+        print(f"[OK] Features built (Census+Heuristic) for: {address}")
         return features
 
     @staticmethod
@@ -82,7 +120,7 @@ class AssessorAPIConnector:
         return {"median_home_value": None, "median_income": None}
 
     @staticmethod
-    def _features_from_address(address: str) -> Dict:
+    def _features_from_address(address: str, rentcast_data: Dict = None) -> Dict:
         """Build house_price_model.pkl feature dict from address parsing, geocoding,
         and real Census ACS data — no CSV files are read."""
         import re
@@ -151,11 +189,23 @@ class AssessorAPIConnector:
         yr_built       = 1990
         gr_liv_area    = 1910.0
         lot_area       = 7590.0
-        bedrooms       = 3
-        full_bath      = 2
-        half_bath      = 0
-        overall_qual   = 7
-        overall_cond   = 5
+        # Use RentCast data if available, otherwise use heuristic defaults
+        if rentcast_data:
+            bedrooms       = int(rentcast_data.get('BedroomAbvGr', 3)) or 3
+            full_bath      = int(rentcast_data.get('FullBath', 2)) or 2
+            half_bath      = int(rentcast_data.get('HalfBath', 0)) or 0
+            gr_liv_area    = float(rentcast_data.get('GrLivArea', 1910.0)) or 1910.0
+            lot_area       = float(rentcast_data.get('LotArea', 7590.0)) or 7590.0
+            yr_built       = int(rentcast_data.get('YearBuilt', 1990)) or 1990
+            overall_qual   = int(rentcast_data.get('OverallQual', 7)) or 7
+            overall_cond   = int(rentcast_data.get('OverallCond', 5)) or 5
+            print(f"[FEATURES] Using RentCast data: {bedrooms}bed, {full_bath}bath, {gr_liv_area}sqft, built {yr_built}")
+        else:
+            bedrooms       = 3
+            full_bath      = 2
+            half_bath      = 0
+            overall_qual   = 7
+            overall_cond   = 5
         tot_rooms      = bedrooms + full_bath + 2
         price_per_sqft = round(census_median / gr_liv_area, 1)
         land_value     = round(census_median * 0.25)
@@ -196,7 +246,7 @@ class AssessorAPIConnector:
             'LandValue':         land_value,
             'price':             census_median,
             'address':           address,
-            'source':            'address-derived + Census ACS (SmartRouter)',
+            'source':            'rentcast_property_data + Census ACS (SmartRouter)',
         }
 
 

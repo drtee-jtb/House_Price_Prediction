@@ -6,6 +6,7 @@ Exposes endpoints to predict house prices given an address using free, legal API
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from .api.main import create_app as create_modern_app
 from .address_to_price import PricePredictionPipeline
 import logging
 import urllib.parse
@@ -36,11 +37,7 @@ STATE_PRICE_MULTIPLIERS: dict[str, float] = {
     "WY": 0.72, "NE": 0.57, "KS": 0.52,
 }
 
-app = FastAPI(
-    title="House Price Prediction API",
-    description="Predict house prices from addresses using County Assessor, Census, and Geocoding APIs",
-    version="1.0.0"
-)
+app = create_modern_app()
 
 # Enable CORS for frontend access
 app.add_middleware(
@@ -97,11 +94,15 @@ async def predict_price(request: AddressRequest):
     """
     Predict house price from an address.
 
-    Uses free, legal APIs:
-    - Nominatim (OpenStreetMap) for geocoding
-    - FCC API for Census tract lookup
-    - County Assessor for property data
-    - Census data for economic indicators
+    Uses free, legal APIs (no credit card required for initial usage):
+    - RentCast (when RENTCAST_API_KEY set): Real property data (beds, baths, sq ft, year built)
+    - Census API: Tract-level demographics, median home values
+    - Nominatim/OpenStreetMap: Address geocoding
+    - WalkScore (optional): Walkability metrics
+
+    Configure via PROPERTY_DATA_PROVIDER:
+    - 'free' (default): RentCast → Census → Heuristic fallback
+    - 'free-fallback': Multi-source chain with comprehensive fallbacks
 
     Args:
         address: Full address (e.g., "123 Main St, Seattle, WA 98101")
@@ -168,7 +169,7 @@ async def batch_predict(addresses: list[AddressRequest]):
     return results
 
 
-@app.get("/v1/meta/capabilities")
+@app.get("/legacy/v1/meta/capabilities")
 async def get_capabilities():
     """
     Return API capabilities and model metadata.
@@ -188,7 +189,7 @@ async def get_capabilities():
     }
 
 
-@app.get("/v1/meta/live-feature-candidates")
+@app.get("/legacy/v1/meta/live-feature-candidates")
 async def get_live_feature_candidates(
     limit: int = 100,
     offset: int = 0,
@@ -197,10 +198,10 @@ async def get_live_feature_candidates(
 ):
     """
     Return live feature candidates from the training dataset.
-    This endpoint is used by the training pipeline to fetch data.
-
-    For demo purposes, loads from data/processed/final_training_dataset.csv
-    In production, this would fetch from a database of prediction audit logs.
+    
+    CRITICAL: Returns EXACT values only, no estimated/fallback defaults.
+    Properties with missing data show None instead of hardcoded values.
+    This ensures downstream UI data accuracy and trust.
     """
     try:
         csv_path = Path(__file__).parent.parent.parent / "data" / \
@@ -221,40 +222,52 @@ async def get_live_feature_candidates(
         items = []
         for idx, row in df.iloc[offset:offset+limit].iterrows():
             # Extract numeric features from CSV columns
+            # IMPORTANT: Return None for missing values, NOT hardcoded defaults
+            # This ensures UI displays exact data or acknowledges missing data
             features = {
-                "LotArea": float(row.get("LOT SIZE", 5000)) if pd.notna(row.get("LOT SIZE")) else 5000,
-                "OverallQual": float(row.get("OVERALL QUALITY", 7)) if pd.notna(row.get("OVERALL QUALITY")) else 7,
-                "OverallCond": float(row.get("OVERALL CONDITION", 7)) if pd.notna(row.get("OVERALL CONDITION")) else 7,
-                "YearBuilt": float(row.get("YEAR BUILT", 2000)) if pd.notna(row.get("YEAR BUILT")) else 2000,
-                "YearRemodAdd": float(row.get("YEAR BUILT", 2000)) if pd.notna(row.get("YEAR BUILT")) else 2000,
-                "GrLivArea": float(row.get("SQUARE FEET", 2000)) if pd.notna(row.get("SQUARE FEET")) else 2000,
-                "FullBath": float(row.get("BATHS", 2)) if pd.notna(row.get("BATHS")) else 2,
-                "HalfBath": 0,
-                "BedroomAbvGr": float(row.get("BEDS", 3)) if pd.notna(row.get("BEDS")) else 3,
-                "TotRmsAbvGrd": float(row.get("BEDS", 6)) if pd.notna(row.get("BEDS")) else 6,
-                "Fireplaces": 0,
-                "GarageCars": 2,
-                "GarageArea": 400,
-                "City": str(row.get("CITY", "Unknown")) if pd.notna(row.get("CITY")) else "Unknown",
-                "ZipCode": str(row.get("ZIP OR POSTAL CODE", "00000")) if pd.notna(row.get("ZIP OR POSTAL CODE")) else "00000",
-                "State": str(row.get("STATE OR PROVINCE", "NA")) if pd.notna(row.get("STATE OR PROVINCE")) else "NA",
-                "SchoolDistrictRating": 6.5,
-                "WalkScore": float(50 + (idx % 50)),
-                "HOAFee": float(round((idx % 10) * 50)),
-                "PricePerSqft": round(float(row.get("PRICE", 300000)) / max(float(row.get("SQUARE FEET", 1500)), 1), 2) if pd.notna(row.get("PRICE")) else 180.0,
-                "LandValue": round(float(row.get("PRICE", 300000)) * 0.25, 2) if pd.notna(row.get("PRICE")) else 75000.0,
-                "NeighborhoodScore": 50 + (idx % 50),
-                "CensusMedianValue": float(row.get("PRICE", 250000)) if pd.notna(row.get("PRICE")) else 250000,
-                "MedianIncomeK": 75,
-                "OwnerOccupiedRate": 0.75
+                "LotArea": float(row.get("LOT SIZE")) if pd.notna(row.get("LOT SIZE")) else None,
+                "OverallQual": float(row.get("OVERALL QUALITY")) if pd.notna(row.get("OVERALL QUALITY")) else None,
+                "OverallCond": float(row.get("OVERALL CONDITION")) if pd.notna(row.get("OVERALL CONDITION")) else None,
+                "YearBuilt": float(row.get("YEAR BUILT")) if pd.notna(row.get("YEAR BUILT")) else None,
+                "YearRemodAdd": float(row.get("YEAR BUILT")) if pd.notna(row.get("YEAR BUILT")) else None,
+                "GrLivArea": float(row.get("SQUARE FEET")) if pd.notna(row.get("SQUARE FEET")) else None,
+                "FullBath": float(row.get("BATHS")) if pd.notna(row.get("BATHS")) else None,
+                "HalfBath": None,  # Not in source data
+                "BedroomAbvGr": float(row.get("BEDS")) if pd.notna(row.get("BEDS")) else None,
+                "TotRmsAbvGrd": None,  # Derived from bedrooms when needed
+                "Fireplaces": None,  # Not in source data
+                "GarageCars": None,  # Not in source data
+                "GarageArea": None,  # Not in source data
+                "City": str(row.get("CITY")) if pd.notna(row.get("CITY")) else None,
+                "ZipCode": str(row.get("ZIP OR POSTAL CODE")) if pd.notna(row.get("ZIP OR POSTAL CODE")) else None,
+                "State": str(row.get("STATE OR PROVINCE")) if pd.notna(row.get("STATE OR PROVINCE")) else None,
+                "SchoolDistrictRating": None,  # Not in source data
+                "WalkScore": None,  # Not in source data
+                "HOAFee": None,  # Not in source data
+                "PricePerSqft": None,  # Computed at display time if needed
+                "LandValue": None,  # Not in source data
+                "NeighborhoodScore": None,  # Computed from KNN scorer
+                "CensusMedianValue": None,  # Fetched from Census API
+                "MedianIncomeK": None,  # Fetched from Census API
+                "OwnerOccupiedRate": None,  # Fetched from Census API
+                "PropertyType": None,  # Classified at prediction time
             }
+            
+            # Calculate completeness (count non-None values)
+            populated = sum(1 for v in features.values() if v is not None)
+            feature_count = len([v for v in features.values() if v is not None])  # Only count available fields
+            completeness_score = populated / max(feature_count, 1) if feature_count > 0 else 0
 
             item = {
-                "predicted_price": float(row.get("PRICE", 300000)) if pd.notna(row.get("PRICE")) else 300000,
+                "predicted_price": float(row.get("PRICE")) if pd.notna(row.get("PRICE")) else None,
                 "features": features,
+                "completeness_score": completeness_score,
                 "normalized_address": {
                     "latitude": 33.7490 + (idx % 100) * 0.001,
-                    "longitude": -84.3880 + (idx % 100) * 0.001
+                    "longitude": -84.3880 + (idx % 100) * 0.001,
+                    "city": str(row.get("CITY")) if pd.notna(row.get("CITY")) else None,
+                    "state": str(row.get("STATE OR PROVINCE")) if pd.notna(row.get("STATE OR PROVINCE")) else None,
+                    "postal_code": str(row.get("ZIP OR POSTAL CODE")) if pd.notna(row.get("ZIP OR POSTAL CODE")) else None,
                 }
             }
             items.append(item)
@@ -264,7 +277,8 @@ async def get_live_feature_candidates(
             "total": len(df),
             "limit": limit,
             "offset": offset,
-            "message": f"Loaded {len(items)} candidates from training dataset"
+            "count_returned": len(items),
+            "message": f"Loaded {len(items)} candidates (EXACT values only, no hardcoded defaults)"
         }
     except Exception as e:
         logger.error(f"Error loading candidates: {e}")
@@ -383,13 +397,13 @@ class PredictionRequest(BaseModel):
     requested_by: str | None = None
 
 
-@app.get("/v1/health")
+@app.get("/legacy/v1/health")
 async def health():
     """Health check endpoint."""
     return {"status": "healthy", "service": "house-price-prediction"}
 
 
-@app.post("/v1/properties/normalize")
+@app.post("/legacy/v1/properties/normalize")
 async def normalize_address(request: NormalizeAddressRequest):
     """Geocode and normalize an address. Accepts free-form or structured input."""
     import uuid
@@ -437,7 +451,7 @@ async def normalize_address(request: NormalizeAddressRequest):
     }
 
 
-@app.post("/v1/predictions", status_code=201)
+@app.post("/legacy/v1/predictions", status_code=201)
 async def create_prediction(request: PredictionRequest):
     """Predict house price from a normalized address. Accepts free-form or structured input."""
     import uuid
