@@ -403,7 +403,15 @@ def render_feature_badges(
     if not entries:
         return
 
-    st.markdown(f"**{title}**")
+    # Show source badge once in the section header, not on every card
+    st.markdown(
+        f"<div style='margin-bottom:8px;'>"
+        f"<strong>{title}</strong>&nbsp;&nbsp;"
+        f"<span style='background:{accent};color:white;border-radius:999px;"
+        f"padding:2px 10px;font-size:0.72rem;font-weight:700;'>{badge_text}</span>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
     cols = st.columns(min(len(entries), 4))
     for index, (feature_name, feature_value) in enumerate(entries):
         label = _KEY_FEATURE_LABELS.get(feature_name, feature_name)
@@ -416,23 +424,12 @@ def render_feature_badges(
                 border-left: 4px solid {accent};
                 border-radius: 14px;
                 padding: 12px 14px;
-                min-height: 108px;
-                box-shadow: 0 10px 24px rgba(15,23,42,0.08);
+                min-height: 96px;
+                box-shadow: 0 4px 12px rgba(15,23,42,0.07);
                 margin-bottom: 10px;
+                overflow: hidden;
             ">
-                <div style="margin-bottom:6px;">
-                    <span style="
-                        background:{accent};
-                        color:white;
-                        border-radius:999px;
-                        padding:2px 8px;
-                        font-size:0.70rem;
-                        font-weight:700;
-                        letter-spacing:0.02em;
-                        white-space:nowrap;
-                    ">{badge_text}</span>
-                </div>
-                <div style="font-size:0.88rem; color:#1f2937; font-weight:600; margin-bottom:6px;">{label}</div>
+                <div style="font-size:0.83rem; color:#4b5563; font-weight:600; margin-bottom:6px;">{label}</div>
                 <div style="font-size:1.5rem; font-weight:800; color:#111827; line-height:1.2;">{value}</div>
             </div>
             """,
