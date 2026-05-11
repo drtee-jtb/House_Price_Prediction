@@ -420,18 +420,19 @@ def render_feature_badges(
                 box-shadow: 0 10px 24px rgba(15,23,42,0.08);
                 margin-bottom: 10px;
             ">
-                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
-                    <div style="font-size:0.88rem; color:#1f2937; font-weight:600;">{label}</div>
+                <div style="margin-bottom:6px;">
                     <span style="
                         background:{accent};
                         color:white;
                         border-radius:999px;
-                        padding:3px 8px;
-                        font-size:0.72rem;
+                        padding:2px 8px;
+                        font-size:0.70rem;
                         font-weight:700;
                         letter-spacing:0.02em;
+                        white-space:nowrap;
                     ">{badge_text}</span>
                 </div>
+                <div style="font-size:0.88rem; color:#1f2937; font-weight:600; margin-bottom:6px;">{label}</div>
                 <div style="font-size:1.5rem; font-weight:800; color:#111827; line-height:1.2;">{value}</div>
             </div>
             """,
@@ -1209,7 +1210,7 @@ def render_lookup_slot(slot_index: int, api_base_url: str) -> dict | None:
                 elif live_property_features:
                     render_feature_badges(
                         live_property_features,
-                        title="Live property facts",
+                        title=source_label,
                         badge_text=source_label,
                         accent="#0f766e",
                     )
